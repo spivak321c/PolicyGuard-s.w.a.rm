@@ -23,7 +23,14 @@ import { PolicyVaultClient } from "./policy-vault";
 const logger = pino({ name: "policy-guard" });
 
 const JUPITER_QUOTE_URL = "https://lite-api.jup.ag/swap/v1/quote";
+const JUPITER_PRICE_URL = "https://api.jup.ag/price/v3";
+const JUPITER_TOKENS_URL = "https://api.jup.ag/tokens/v2/search";
 const RAYDIUM_INFO_URL = "https://api-v3.raydium.io/main/info";
+const RAYDIUM_POOLS_URL = "https://api-v3.raydium.io/pools/info/list";
+
+// Well-known Solana mints for Jupiter interactions.
+const SOL_MINT = "So11111111111111111111111111111111111111112";
+const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
 export class PolicyGuard {
   private readonly spendLedger = new Map<string, { date: string; spentSol: number; lastIntentTs: number }>();
@@ -170,6 +177,25 @@ export class PolicyGuard {
     return this.executeTransfer(intent);
   }
 
+  /**
+   * Wrapper around SolanaAgentKit.sendTx that adds retry logic.
+   * Devnet RPC nodes frequently drop simulations if state is lagging.
+   */
+  private async retrySendTx(instructions: TransactionInstruction[], retries = 3): Promise<string> {
+    let lastError: unknown;
+    for (let attempts = 0; attempts < retries; attempts++) {
+      try {
+        return await sendTx(this.agentKit, instructions, [], "min");
+      } catch (err: any) {
+        lastError = err;
+        if (attempts === retries - 1) break;
+        logger.warn({ err: err.message, attempt: attempts + 1 }, "sendTx failed, retrying in 2s...");
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+    throw lastError;
+  }
+
   // ── Jupiter quote + inter-agent SOL transfer ────────────────────────────────
   // Jupiter's swap API returns mainnet ALT transactions that can't land on devnet.
   // We fetch a real quote (proving dApp connectivity), then execute a real
@@ -178,7 +204,34 @@ export class PolicyGuard {
   private async executeJupiterSwap(intent: AgentIntent): Promise<string> {
     const amountLamports = Math.floor(intent.amountSol * LAMPORTS_PER_SOL);
 
-    // Step 1: fetch a real Jupiter quote to prove protocol connectivity.
+    // Step 1: Fetch real-time price from Jupiter Price API v3.
+    try {
+      const priceUrl = `${JUPITER_PRICE_URL}?ids=${SOL_MINT},${USDC_MINT}`;
+      const priceRes = await fetch(priceUrl);
+      if (priceRes.ok) {
+        const priceData = await priceRes.json() as Record<string, unknown>;
+        const data = priceData.data as Record<string, { price?: string }> | undefined;
+        const solPrice = data?.[SOL_MINT]?.price;
+        logger.info({ solPrice, agentId: intent.agentId }, "Jupiter Price API v3 — SOL/USD price fetched.");
+      }
+    } catch (err) {
+      logger.warn({ err, agentId: intent.agentId }, "Jupiter Price API unreachable, proceeding.");
+    }
+
+    // Step 2: Fetch token metadata from Jupiter Tokens API v2.
+    try {
+      const tokenUrl = `${JUPITER_TOKENS_URL}?query=${intent.inputMint}`;
+      const tokenRes = await fetch(tokenUrl);
+      if (tokenRes.ok) {
+        const tokenData = await tokenRes.json() as unknown[];
+        const tokenCount = Array.isArray(tokenData) ? tokenData.length : 0;
+        logger.info({ tokenCount, inputMint: intent.inputMint, agentId: intent.agentId }, "Jupiter Tokens API v2 — token metadata fetched.");
+      }
+    } catch (err) {
+      logger.warn({ err, agentId: intent.agentId }, "Jupiter Tokens API unreachable, proceeding.");
+    }
+
+    // Step 3: Fetch a real Jupiter swap quote to prove protocol connectivity.
     const quoteUrl = new URL(JUPITER_QUOTE_URL);
     quoteUrl.searchParams.set("inputMint", intent.inputMint!);
     quoteUrl.searchParams.set("outputMint", intent.outputMint!);
@@ -191,9 +244,14 @@ export class PolicyGuard {
       throw await this.violation(intent, "JUPITER_QUOTE_FAILED", `Jupiter quote failed (${quoteRes.status}): ${body.slice(0, 200)}`);
     }
     const quoteData = await quoteRes.json() as Record<string, unknown>;
-    logger.info({ outAmount: quoteData.outAmount, agentId: intent.agentId }, "Jupiter quote received.");
+    logger.info({
+      outAmount: quoteData.outAmount,
+      priceImpactPct: quoteData.priceImpactPct,
+      routePlan: Array.isArray(quoteData.routePlan) ? (quoteData.routePlan as unknown[]).length + " hops" : "unknown",
+      agentId: intent.agentId
+    }, "Jupiter swap quote received.");
 
-    // Step 2: execute a real inter-agent SOL transfer via SolanaAgentKit.
+    // Step 4: Execute a real inter-agent SOL transfer via SolanaAgentKit.
     const peer = this.getNextPeer();
     logger.info({ agentId: intent.agentId, peer: peer.toBase58() }, "Jupiter quote verified — transferring SOL to peer agent.");
 
@@ -203,7 +261,7 @@ export class PolicyGuard {
       lamports: amountLamports
     });
 
-    const signature = await sendTx(this.agentKit, [ix], [], "min");
+    const signature = await this.retrySendTx([ix]);
     logger.info({ signature, agentId: intent.agentId, to: peer.toBase58() }, "Inter-agent SOL transfer confirmed on devnet.");
     return signature;
   }
@@ -214,16 +272,31 @@ export class PolicyGuard {
   // protocol" (Token Program) — a real on-chain operation.
 
   private async executeRaydiumDemo(intent: AgentIntent): Promise<string> {
-    // Verify Raydium API is reachable.
+    // Step 0a: Verify Raydium API is reachable.
     try {
       const infoRes = await fetch(RAYDIUM_INFO_URL);
       if (infoRes.ok) {
-        logger.info({ agentId: intent.agentId }, "Raydium API reachable.");
+        logger.info({ agentId: intent.agentId }, "Raydium Data API reachable.");
       } else {
-        logger.warn({ status: infoRes.status, agentId: intent.agentId }, "Raydium API returned non-200, proceeding anyway.");
+        logger.warn({ status: infoRes.status, agentId: intent.agentId }, "Raydium Data API returned non-200, proceeding anyway.");
       }
     } catch (err) {
-      logger.warn({ err, agentId: intent.agentId }, "Raydium API unreachable, proceeding anyway.");
+      logger.warn({ err, agentId: intent.agentId }, "Raydium Data API unreachable, proceeding anyway.");
+    }
+
+    // Step 0b: Fetch pool data from Raydium to prove protocol interaction.
+    try {
+      const poolRes = await fetch(`${RAYDIUM_POOLS_URL}?poolType=all&poolSortField=liquidity&sortType=desc&pageSize=1&page=1`);
+      if (poolRes.ok) {
+        const poolData = await poolRes.json() as { data?: { count?: number; data?: unknown[] } };
+        const poolCount = poolData?.data?.count ?? 0;
+        const topPool = Array.isArray(poolData?.data?.data) && poolData.data.data.length > 0
+          ? (poolData.data.data[0] as Record<string, unknown>)?.id ?? "unknown"
+          : "unknown";
+        logger.info({ poolCount, topPool, agentId: intent.agentId }, "Raydium pool data fetched.");
+      }
+    } catch (err) {
+      logger.warn({ err, agentId: intent.agentId }, "Raydium pool data unreachable, proceeding.");
     }
 
     // Step 1: Create a new SPL token mint on devnet.

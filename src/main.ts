@@ -97,6 +97,9 @@ async function runSwarm(args: string[]): Promise<void> {
     const funderWallet = loadFunderWallet(args);
     const airdropRpc = parseFlag(args, "airdrop-rpc");
     await swarm.ensureFunding(funderWallet, airdropRpc);
+
+    console.log("Waiting 3s for devnet RPC nodes to sync balances...");
+    await new Promise((r) => setTimeout(r, 3000));
   }
 
   const results = await swarm.runCoordinatedYieldStrategy();

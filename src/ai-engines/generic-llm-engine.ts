@@ -16,6 +16,8 @@
  */
 
 import type { AgentIntent, IAgentDecisionEngine } from "../types";
+import { readFileSync } from "fs";
+import { resolve } from "path";
 
 export interface GenericLLMConfig {
     /** Full URL to the OpenAI-compatible /chat/completions endpoint. */
@@ -48,6 +50,47 @@ Respond with ONLY valid JSON matching this exact schema — no commentary, no ma
 }
 Rules: prefer jupiter for swaps, raydium for liquidity. Keep amountSol ≤ 0.4.
 `.trim();
+
+/**
+ * Attempt to load SKILLS.md and create a condensed skills summary for the LLM.
+ * This lets the AI agent "read" the skills file and understand available capabilities.
+ */
+function loadSkillsContext(): string {
+    try {
+        const skillsPath = resolve(process.cwd(), "SKILLS.md");
+        const raw = readFileSync(skillsPath, "utf-8");
+        // Extract a condensed version — the LLM doesn't need the full file,
+        // just enough to understand available skills and protocols.
+        const lines = raw.split("\n");
+        const condensed: string[] = ["\n--- SKILLS CONTEXT (from SKILLS.md) ---"];
+        condensed.push("The following skills are available in this wallet system:");
+        let inSkillBlock = false;
+        for (const line of lines) {
+            // Capture skill names and descriptions
+            if (line.trim().startsWith("- name:")) {
+                inSkillBlock = true;
+                condensed.push(line.trim());
+            } else if (inSkillBlock && line.trim().startsWith("description:")) {
+                condensed.push("  " + line.trim());
+                inSkillBlock = false;
+            }
+            // Capture section headers
+            if (line.startsWith("## ")) {
+                condensed.push(line);
+            }
+        }
+        condensed.push("--- END SKILLS CONTEXT ---");
+        return condensed.join("\n");
+    } catch {
+        return ""; // SKILLS.md not found — proceed without skills context
+    }
+}
+
+const SKILLS_CONTEXT = loadSkillsContext();
+if (SKILLS_CONTEXT) {
+  const skillCount = (SKILLS_CONTEXT.match(/- name:/g) || []).length;
+  console.log(`  [GenericLLMEngine] Loaded SKILLS.md (${skillCount} skills injected into LLM prompt)`);
+}
 
 function safeParseIntent(
     raw: string,
@@ -143,7 +186,7 @@ export class GenericLLMEngine implements IAgentDecisionEngine {
             temperature: this.config.temperature,
             max_tokens: 256,
             messages: [
-                { role: "system", content: SYSTEM_PROMPT },
+                { role: "system", content: SYSTEM_PROMPT + SKILLS_CONTEXT },
                 {
                     role: "user",
                     content: `Agent: ${input.agentId} | Bias: ${input.marketBias} | Protocol: ${input.protocolPreference} | Time: ${new Date().toISOString()}\nReply with only the JSON intent object.`
