@@ -28,7 +28,7 @@ export function getDefaultPolicyConfig(): PolicyConfig {
     cooldownSeconds: 10,
     requireReasonString: true,
     enforceDevnetOnly: true,
-    minTreasuryReserveSol: 0.25
+    minTreasuryReserveSol: 0.05
   };
 }
 

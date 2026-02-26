@@ -5,6 +5,7 @@ import {
   PublicKey,
   Transaction,
   VersionedTransaction,
+  SystemProgram,
   clusterApiUrl
 } from "@solana/web3.js";
 import { ScriptedDecisionEngine } from "./agent-logic";
@@ -94,14 +95,23 @@ export class SwarmExecutor {
   }
 
   spawnAgents(count = 6): SwarmAgent[] {
+    // Two-pass spawn: first generate keypairs, then create PolicyGuards with peer addresses.
+    const keypairs: Keypair[] = [];
     for (let i = 0; i < count; i += 1) {
-      const keypair = Keypair.generate();
+      keypairs.push(Keypair.generate());
+    }
+
+    // Collect all wallet addresses so each PolicyGuard knows its peers.
+    const allAddresses = keypairs.map((kp) => kp.publicKey.toBase58());
+
+    for (let i = 0; i < count; i += 1) {
+      const keypair = keypairs[i]!;
       const wallet = createAnchorWallet(keypair);
       const provider = new AnchorProvider(this.connection, wallet, {});
       const vault = new PolicyVaultClient(provider);
       const config = getDefaultPolicyConfig();
-      // PolicyGuard no longer requires SolanaAgentKit.
-      const guard = new PolicyGuard(config, this.connection, keypair, vault);
+      // Pass all agent addresses so PolicyGuard can target peers (not self).
+      const guard = new PolicyGuard(config, this.connection, keypair, vault, allAddresses);
 
       const agent: SwarmAgent = {
         id: `agent-${i + 1}`,
@@ -133,13 +143,52 @@ export class SwarmExecutor {
   }
 
   /**
-   * Airdrops 2 SOL to each agent if they have less than 0.5 SOL.
-   * Useful for devnet demos.
-   * @param airdropRpcUrl Optional secondary RPC URL specifically for faucet requests.
+   * Distributes SOL to agents.
+   * If funderWallet is provided, it transfers SOL from that master wallet.
+   * Otherwise fallbacks to airdrops (which are easily rate limited on devnet).
    */
-  async ensureAirdrops(airdropRpcUrl?: string): Promise<void> {
+  async ensureFunding(funderWallet?: Keypair, airdropRpcUrl?: string): Promise<void> {
     const isDevnet = this.connection.rpcEndpoint.includes("devnet") || (airdropRpcUrl && airdropRpcUrl.includes("devnet"));
     if (!isDevnet) return;
+
+    if (funderWallet) {
+      console.log(`Checking balance and ensuring devnet funding from funder wallet for ${this.agents.length} agents...`);
+      for (const agent of this.agents) {
+        const pubkey = new PublicKey(agent.walletAddress);
+        const balance = await this.connection.getBalance(pubkey);
+        const balanceSol = balance / 10 ** 9;
+
+        console.log(`  [${agent.id}] Balance: ${balanceSol.toFixed(3)}◎`);
+
+        if (balance < 0.5 * 10 ** 9) {
+          try {
+            console.log(`  [${agent.id}] Transferring 0.3 SOL from funder...`);
+            const tx = new Transaction().add(
+              SystemProgram.transfer({
+                fromPubkey: funderWallet.publicKey,
+                toPubkey: pubkey,
+                lamports: 0.3 * 10 ** 9,
+              })
+            );
+            const latestBlockhash = await this.connection.getLatestBlockhash();
+            tx.recentBlockhash = latestBlockhash.blockhash;
+            tx.feePayer = funderWallet.publicKey;
+            tx.sign(funderWallet);
+
+            const sig = await this.connection.sendRawTransaction(tx.serialize());
+            await this.connection.confirmTransaction({
+              signature: sig,
+              blockhash: latestBlockhash.blockhash,
+              lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
+            });
+            console.log(`  [${agent.id}] Funded ✅ Current: ${(await this.connection.getBalance(pubkey) / 10 ** 9).toFixed(3)}◎`);
+          } catch (err) {
+            console.warn(`  [${agent.id}] Funding failed:`, err instanceof Error ? err.message : String(err));
+          }
+        }
+      }
+      return;
+    }
 
     const faucetConn = airdropRpcUrl ? new Connection(airdropRpcUrl, "confirmed") : this.connection;
 
@@ -160,10 +209,15 @@ export class SwarmExecutor {
           try {
             console.log(`  [${agent.id}] Requesting airdrop (2 SOL)...`);
             const sig = await faucetConn.requestAirdrop(pubkey, 2 * 10 ** 9);
-            await faucetConn.confirmTransaction(sig);
+            const latestBlockhash = await this.connection.getLatestBlockhash();
+            await this.connection.confirmTransaction({
+              signature: sig,
+              blockhash: latestBlockhash.blockhash,
+              lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
+            });
             console.log(`  [${agent.id}] Airdropped ✅ Current: ${(await this.connection.getBalance(pubkey) / 10 ** 9).toFixed(3)}◎`);
           } catch (err) {
-            console.warn(`  [${agent.id}] Airdrop failed (likely rate limited).`);
+            console.warn(`  [${agent.id}] Airdrop failed:`, err instanceof Error ? err.message : String(err));
           }
         }
       })

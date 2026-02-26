@@ -2,39 +2,50 @@
 
 ## Why this architecture exists
 
-`policyguard-swarm-agentic-wallet` is designed to satisfy a difficult balance: autonomous behavior for an agentic system while maintaining strict key isolation and deterministic policy enforcement. In many wallet experiments, an LLM receives too much authority and effectively becomes a signer. That is exactly the anti-pattern this bounty tries to avoid. Here, the architecture treats AI as a planner and the wallet runtime as a constrained executor. The result is a design where agents can still coordinate, trade, and rebalance on Solana devnet, but every action is gated by a hardened policy layer.
+`policyguard-swarm-agentic-wallet` is designed to satisfy a difficult balance: autonomous behavior for an agentic system while maintaining strict key isolation and deterministic policy enforcement. In many wallet experiments, an LLM receives too much authority and effectively becomes a signer. That is exactly the anti-pattern this bounty tries to avoid. Here, the architecture treats AI as a planner and the wallet runtime as a constrained executor — powered by [Solana Agent Kit](https://github.com/sendaifun/solana-agent-kit) for wallet execution. The result is a design where agents can still coordinate, trade, and rebalance on Solana devnet, but every action is gated by a hardened policy layer.
 
-The project is Bun-native end-to-end. The execution model uses lightweight TypeScript modules, explicit interfaces, and a fail-fast security pipeline. The code paths ensure that private keys are generated and retained inside isolated runtime contexts. No prompt-facing or model-facing module can directly call signing operations.
+The project is Bun-native end-to-end. The execution model uses lightweight TypeScript modules, explicit interfaces, and a fail-fast security pipeline. Each agent gets its own `KeypairWallet` → `SolanaAgentKit` instance, and transactions are sent via `sendTx` with automatic compute budget management.
 
 ## High-level architecture
 
 ```mermaid
 flowchart TD
-  A[Agent Decision Engine\nScripted/Ollama Stub] -->|Intent Only| B[PolicyGuard]
+  A[Agent Decision Engine\nScripted/Groq/Generic LLM] -->|Intent Only| B[PolicyGuard]
   B --> C{8-Step Validation}
-  C -->|Pass| D[solana-agent-kit Execution]
+  C -->|Pass| D[SolanaAgentKit Execution\nKeypairWallet + sendTx]
   C -->|Fail| E[PolicyViolationError + Reason]
   D --> F[Transaction Signature]
   E --> G[Rejected Intent]
-  F --> H[PolicyVault Anchor Logger]
+  F --> H[PolicyVault Audit Logger]
   G --> H
-  subgraph Swarm
-    S1[Agent 1 Wallet]
-    S2[Agent 2 Wallet]
-    S3[Agent N Wallet]
+  subgraph Funder Wallet
+    FW[funder.json] -->|0.3 SOL each| S1
+    FW -->|0.3 SOL each| S2
+    FW -->|0.3 SOL each| S3
   end
-  S1 --> A
-  S2 --> A
-  S3 --> A
+  subgraph Swarm
+    S1[Agent 1\nKeypairWallet + SolanaAgentKit]
+    S2[Agent 2\nKeypairWallet + SolanaAgentKit]
+    S3[Agent N\nKeypairWallet + SolanaAgentKit]
+  end
+  S1 -->|Peer Addresses| A
+  S2 -->|Peer Addresses| A
+  S3 -->|Peer Addresses| A
+  subgraph "Execution Paths"
+    J[Jupiter: Quote API + Inter-agent SOL Transfer]
+    R[Raydium: SPL Token Mint + Inter-agent Token Transfer]
+  end
+  D --> J
+  D --> R
 ```
 
 Each swarm agent has its own wallet and its own PolicyGuard instance. The guard holds policy configuration, a daily spend ledger, cooldown timing state, and references to execution infrastructure. If an intent is rejected at any stage, execution is stopped immediately and a reason code is emitted.
 
 ## Wallet architecture details
 
-### 1) Isolated keypairs
+### 1) Isolated keypairs + SolanaAgentKit
 
-Every agent is provisioned through `Keypair.generate()` during swarm spawning. The keypair remains in the local runtime object graph where the PolicyGuard instance for that agent lives. The decision engine never receives key material and cannot access signer methods.
+Every agent is provisioned through `Keypair.generate()` during a two-pass swarm spawn. The keypair is wrapped in a `KeypairWallet` from Solana Agent Kit, which is then used to create a per-agent `SolanaAgentKit` instance. This instance lives inside the agent's `PolicyGuard` — the decision engine never receives key material and cannot access signer methods.
 
 ### 2) Intent-driven behavior
 
@@ -42,7 +53,21 @@ The agent decision module outputs an `AgentIntent` object. This object includes 
 
 ### 3) Automated signing path
 
-After validation succeeds, PolicyGuard invokes the execution path powered by `solana-agent-kit`. This is where signing occurs automatically with no manual click-path. The same safety layer also maintains treasury reserve checks and day-level spend limits.
+After validation succeeds, PolicyGuard routes execution through `SolanaAgentKit`:
+
+- **Jupiter path**: fetches a real quote from the Jupiter API (proving dApp connectivity with real price data), then executes a confirmed **inter-agent SOL transfer** to a peer agent via `sendTx`.
+- **Raydium path**: verifies Raydium API reachability, then creates a new **SPL token mint** on devnet, mints tokens to the agent's associated token account, and **transfers SPL tokens to a peer agent's token account** — interacting with the Token Program.
+- **Generic fallback**: inter-agent SOL transfer via `sendTx`.
+
+All transactions use `sendTx` from Solana Agent Kit, which handles compute budget estimation and priority fees automatically.
+
+### 4) Funder wallet distribution
+
+Instead of relying on rate-limited devnet airdrops, agents are funded from a single **funder wallet** (`--funder=funder.json`). The funder wallet is created on first run and must be funded via the [Solana devnet faucet](https://faucet.solana.com/) before the swarm can execute. On subsequent runs, the swarm executor distributes 0.3 SOL to each agent via `SystemProgram.transfer`.
+
+### 5) Peer-aware execution
+
+The swarm executor uses a two-pass spawn: first all keypairs are generated, then all wallet addresses are collected and passed to each `PolicyGuard` constructor. This allows each agent to know its peers and execute real inter-agent transfers (round-robin) instead of meaningless self-transfers.
 
 ## PolicyGuard internals (exact 8-step validation)
 
@@ -117,13 +142,52 @@ This enables predictable tool invocation and avoids free-form prompting for sens
 
 ## Devnet execution walkthrough
 
-1. Spawn wallets (`create-wallet` or `run-swarm --agents=6`).
-2. Fund devnet wallets from faucet.
-3. Generate intents via scripted decision engine.
-4. Validate intents through PolicyGuard 8-step sequence.
-5. Execute approved intents via automated signer path.
-6. Record outcomes to audit log client.
-7. Review event stream and rejection reasons.
+1. Generate funder wallet (`--funder=funder.json` on first run).
+2. Fund funder wallet via Solana devnet faucet.
+3. Run swarm — funder distributes 0.3 SOL to each agent via `SystemProgram.transfer`.
+4. AI engine (Groq/scripted) generates intents.
+5. Validate intents through PolicyGuard 8-step sequence.
+6. For Jupiter: fetch real quote from Jupiter API → inter-agent SOL transfer via `sendTx`.
+7. For Raydium: verify API reachability → create SPL token mint → mint tokens → inter-agent SPL token transfer.
+8. Record outcomes to audit log client.
+9. Review event stream and rejection reasons.
+
+## Live devnet test results
+
+### Swarm execution (3 agents, Groq engine)
+
+```
+Engine: GroqDecisionEngine | Agents: 3 | RPC: devnet (default)
+Funding: 0.3 SOL per agent from funder wallet
+
+[agent-3] 📋 jupiter 0.04◎
+  → Jupiter quote received (outAmount: 3440057)
+  → Inter-agent SOL transfer to peer 4uzFyqnCfhFuWLVXF5AuYWNAUoyLdoTrbKbgEiZQe2X5
+[agent-3] ✅ Signature: 2QDE5Cfq5QFDybTZAK9QSpQUH4p9GsogbtfTpgdFgPbwHiJJe9uo4ZBLXhGN4u44jNxnzoCDQXWpWVX7FSmyae7G
+
+[agent-1] 📋 raydium 0.2◎
+  → Raydium API reachable
+  → SPL token mint created: EctQJhFFs2gy7fk2A4huMjB4oYriJKeVB9szsmrbacmP
+  → 200M tokens minted to agent wallet
+  → SPL tokens transferred to peer 8iu4p68yehR1CJ59YwAdMmiBZcv1Q3PT7K7TBhBASPaE
+[agent-1] ✅ Signature: 4PSMtHqU4kAuA65EKmtUytPfLXBKin5kh27Vr7JpHTLpkbyBs4pfZeiTun65XbDuGxp8sbSpT2iEGG4Dk8o6DWMz
+
+Swarm complete — 2 executed, 1 rejected out of 3 agents.
+```
+
+Verify on [Solana Explorer (devnet)](https://explorer.solana.com/?cluster=devnet):
+- [agent-3 Jupiter SOL transfer](https://explorer.solana.com/tx/2QDE5Cfq5QFDybTZAK9QSpQUH4p9GsogbtfTpgdFgPbwHiJJe9uo4ZBLXhGN4u44jNxnzoCDQXWpWVX7FSmyae7G?cluster=devnet)
+- [agent-1 SPL token mint + transfer](https://explorer.solana.com/tx/4PSMtHqU4kAuA65EKmtUytPfLXBKin5kh27Vr7JpHTLpkbyBs4pfZeiTun65XbDuGxp8sbSpT2iEGG4Dk8o6DWMz?cluster=devnet)
+- [SPL token mint](https://explorer.solana.com/address/EctQJhFFs2gy7fk2A4huMjB4oYriJKeVB9szsmrbacmP?cluster=devnet)
+
+### Attack simulation (malicious intent blocked)
+
+```
+Simulating malicious intent (amountSol=10, rationale='hack')...
+✅ Rejected as expected: Policy violation [RATIONALE_REQUIRED]: Intent rationale must be present and meaningful.
+```
+
+The attacker's intent is rejected at PolicyGuard's first validation step before any signing or execution can occur.
 
 ## Submission-readiness checklist rationale
 
@@ -138,7 +202,9 @@ This implementation is aligned to the stated bounty criteria:
 ## Future hardening ideas
 
 - Add durable persistent ledger storage for spend/cooldown state.
-- Integrate real Jupiter quote/route APIs and Raydium pool adapters.
+- Integrate full Jupiter swap execution on mainnet (ALTs available).
+- Integrate real Raydium LP pool initialization and deposit flows.
+- Leverage Solana Agent Kit plugins (token, DeFi, NFT) for richer protocol interactions.
 - Add cryptographic policy receipts signed by a policy authority key.
 - Add multi-party override workflows for emergency policy edits.
 - Add deterministic simulation mode to compare planned vs. executed routes.

@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { Keypair } from "@solana/web3.js";
+import * as fs from "fs";
 import {
   ScriptedDecisionEngine,
   GroqDecisionEngine,
@@ -40,6 +41,24 @@ function buildEngine(args: string[]): IAgentDecisionEngine {
   }
 }
 
+function loadFunderWallet(args: string[]): Keypair | undefined {
+  const funderPath = parseFlag(args, "funder");
+  if (!funderPath) return undefined;
+
+  if (!fs.existsSync(funderPath)) {
+    const newWallet = Keypair.generate();
+    fs.writeFileSync(funderPath, JSON.stringify(Array.from(newWallet.secretKey)));
+    console.log(`\nFunder wallet created at: ${funderPath}`);
+    console.log(`Address: ${newWallet.publicKey.toBase58()}`);
+    console.log(`Please fund this wallet via the faucet before running the swarm:`);
+    console.log(`  solana airdrop 5 ${newWallet.publicKey.toBase58()} --url devnet\n`);
+    process.exit(1);
+  }
+
+  const secretKey = new Uint8Array(JSON.parse(fs.readFileSync(funderPath, "utf-8")));
+  return Keypair.fromSecretKey(secretKey);
+}
+
 async function createWallet(): Promise<void> {
   const wallet = Keypair.generate();
   console.log("New wallet created:", wallet.publicKey.toBase58());
@@ -75,8 +94,9 @@ async function runSwarm(args: string[]): Promise<void> {
 
   // Automatically ensure airdrops on devnet if not explicitly disabled.
   if (!parseFlag(args, "no-airdrop")) {
+    const funderWallet = loadFunderWallet(args);
     const airdropRpc = parseFlag(args, "airdrop-rpc");
-    await swarm.ensureAirdrops(airdropRpc);
+    await swarm.ensureFunding(funderWallet, airdropRpc);
   }
 
   const results = await swarm.runCoordinatedYieldStrategy();
@@ -136,12 +156,12 @@ Engines:
              LLM_MODEL     e.g. llama-3.1-8b-instant, phi3, mistral
 
 Examples:
-  # Groq
-  GROQ_API_KEY=gsk_... bun run src/main.ts run-swarm --engine=groq
+  # Use single funder wallet
+  GROQ_API_KEY=gsk_... bun run src/main.ts run-swarm --engine=groq --funder=funder.json
 
   # Using split RPCs (Faucet on dRPC, main logic on public devnet)
   bun run src/main.ts run-swarm --engine=groq \\
-    --airdrop-rpc=https://solana-devnet.drpc.org
+    --airdrop-rpc=https://api.devnet.solana.com
 
   # Ollama (local, no key)
   LLM_ENDPOINT=http://localhost:11434/v1/chat/completions LLM_MODEL=phi3 \\

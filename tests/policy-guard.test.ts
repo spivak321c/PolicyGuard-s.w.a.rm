@@ -5,6 +5,25 @@ import { getDefaultPolicyConfig } from "../src/policy-config";
 import type { AgentIntent, PolicyConfig } from "../src/types";
 import { SwarmExecutor } from "../src/swarm-executor";
 
+// Mock solana-agent-kit so PolicyGuard tests work with mock connections.
+vi.mock("solana-agent-kit", () => ({
+  KeypairWallet: vi.fn().mockImplementation((kp: any, rpc: string) => ({
+    publicKey: kp.publicKey,
+    signTransaction: vi.fn(async (tx: any) => tx),
+    signAllTransactions: vi.fn(async (txs: any[]) => txs),
+    signAndSendTransaction: vi.fn(async () => ({ signature: "mockSig" })),
+    signMessage: vi.fn(async () => new Uint8Array()),
+  })),
+  SolanaAgentKit: vi.fn().mockImplementation(() => ({
+    connection: {},
+    wallet: {},
+    config: {},
+    methods: {},
+    actions: [],
+  })),
+  sendTx: vi.fn(async () => "mockTxSig"),
+}));
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 // A valid 32-char base58 blockhash that satisfies Solana's length check.
@@ -47,6 +66,7 @@ function buildIntent(overrides: Partial<AgentIntent> = {}): AgentIntent {
 function setupGuard(configOverride: Partial<PolicyConfig> = {}) {
   const config = { ...getDefaultPolicyConfig(), ...configOverride };
   const signer = Keypair.generate();
+  const peer = Keypair.generate();
   const connection = {
     rpcEndpoint: "https://api.devnet.solana.com",
     getBalance: vi.fn(async () => 10_000_000_000),
@@ -56,8 +76,9 @@ function setupGuard(configOverride: Partial<PolicyConfig> = {}) {
     confirmTransaction: vi.fn(async () => ({ value: { err: null } }))
   } as never;
   const policyVault = { logAction: vi.fn(async () => "auditSig") } as never;
+  const peerAddresses = [signer.publicKey.toBase58(), peer.publicKey.toBase58()];
   // Return signer so individual tests can build correctly-signed fake txs.
-  return { guard: new PolicyGuard(config, connection, signer, policyVault), config, signer };
+  return { guard: new PolicyGuard(config, connection, signer, policyVault, peerAddresses), config, signer };
 }
 
 /**
