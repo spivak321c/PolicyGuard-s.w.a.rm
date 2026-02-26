@@ -1,0 +1,27 @@
+{
+  "name": "policyguard-swarm-agentic-wallet",
+  "version": "0.1.0",
+  "description": "PolicyGuard Swarm Agentic Wallet for Solana devnet",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/main.ts",
+    "build": "bun build ./src/main.ts --outdir ./dist --target bun",
+    "test": "bunx vitest run",
+    "example": "bun run examples/usage.ts",
+    "swarm": "bun run src/main.ts run-swarm"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.30.0",
+    "@solana/spl-token": "^0.4.0",
+    "@solana/web3.js": "^1.95.0",
+    "date-fns": "^3.6.0",
+    "groq-sdk": "^0.37.0",
+    "pino": "^9.0.0",
+    "solana-agent-kit": "latest",
+    "typescript": "^5.5.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "vitest": "^1.6.0"
+  }
+}

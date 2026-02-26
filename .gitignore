@@ -1,0 +1,7 @@
+.env
+node_modules/
+dashboard/node_modules/
+.bun/
+.svelte-kit/
+dashboard/.svelte-kit/
+dashboard/build/
