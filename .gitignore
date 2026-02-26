@@ -5,3 +5,5 @@ dashboard/node_modules/
 .svelte-kit/
 dashboard/.svelte-kit/
 dashboard/build/
+funder.json
+tests
