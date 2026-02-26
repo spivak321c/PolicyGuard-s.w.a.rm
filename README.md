@@ -251,14 +251,6 @@ Simulating malicious intent (amountSol=10, rationale='hack')...
 ✅ Rejected as expected: Policy violation [RATIONALE_REQUIRED]: Intent rationale must be present and meaningful.
 ```
 
-## Video deep-dive note
+## Deep dive
 
-Record a **6-minute Loom** following the walkthrough checklist in `DEEP_DIVE.md`:
-- architecture + Solana Agent Kit integration,
-- policy validation sequence,
-- swarm execution with funder wallet + inter-agent transfers,
-- SPL token creation and transfer on Solana Explorer,
-- verified devnet signatures on Solana Explorer,
-- malicious intent rejection,
-- audit-trail explanation,
-- bounty requirement mapping.
+For a full technical deep dive into the architecture, security model, Solana Agent Kit integration, PolicyGuard internals, and execution walkthrough, see **[DEEP_DIVE.md](./DEEP_DIVE.md)**.
