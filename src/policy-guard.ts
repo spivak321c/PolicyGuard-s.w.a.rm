@@ -4,7 +4,7 @@ import {
   LAMPORTS_PER_SOL,
   SystemProgram,
   Transaction,
-  VersionedTransaction,
+  TransactionInstruction,
   type Connection,
   type Keypair,
   PublicKey
@@ -15,12 +15,12 @@ import {
   mintTo,
   transfer as splTransfer
 } from "@solana/spl-token";
-import { SolanaAgentKit, KeypairWallet, sendTx } from "solana-agent-kit";
+import { SolanaAgentKit, KeypairWallet } from "solana-agent-kit";
 import type { AgentIntent, PolicyConfig, PolicyAuditRecord } from "./types";
 import { PolicyViolationError } from "./types";
 import { PolicyVaultClient } from "./policy-vault";
 
-const logger = pino({ name: "policy-guard" });
+const logger = pino({ name: "policy-guard", level: process.env.SWARM_TECHNICAL_LOGS === "1" ? "info" : "silent" });
 
 const JUPITER_QUOTE_URL = "https://lite-api.jup.ag/swap/v1/quote";
 const JUPITER_PRICE_URL = "https://api.jup.ag/price/v3";
@@ -177,23 +177,15 @@ export class PolicyGuard {
     return this.executeTransfer(intent);
   }
 
-  /**
-   * Wrapper around SolanaAgentKit.sendTx that adds retry logic.
-   * Devnet RPC nodes frequently drop simulations if state is lagging.
-   */
-  private async retrySendTx(instructions: TransactionInstruction[], retries = 3): Promise<string> {
-    let lastError: unknown;
-    for (let attempts = 0; attempts < retries; attempts++) {
-      try {
-        return await sendTx(this.agentKit, instructions, [], "min");
-      } catch (err: any) {
-        lastError = err;
-        if (attempts === retries - 1) break;
-        logger.warn({ err: err.message, attempt: attempts + 1 }, "sendTx failed, retrying in 2s...");
-        await new Promise((r) => setTimeout(r, 2000));
-      }
-    }
-    throw lastError;
+  private async sendAndConfirmIx(instructions: TransactionInstruction[]): Promise<string> {
+    const tx = new Transaction().add(...instructions);
+    const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash();
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = this.signer.publicKey;
+    tx.sign(this.signer);
+    const sig = await this.connection.sendRawTransaction(tx.serialize());
+    await this.connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight });
+    return sig;
   }
 
   // ── Jupiter quote + inter-agent SOL transfer ────────────────────────────────
@@ -261,7 +253,7 @@ export class PolicyGuard {
       lamports: amountLamports
     });
 
-    const signature = await this.retrySendTx([ix]);
+    const signature = await this.sendAndConfirmIx([ix]);
     logger.info({ signature, agentId: intent.agentId, to: peer.toBase58() }, "Inter-agent SOL transfer confirmed on devnet.");
     return signature;
   }
@@ -371,7 +363,7 @@ export class PolicyGuard {
       lamports
     });
 
-    const signature = await sendTx(this.agentKit, [ix], [], "min");
+    const signature = await this.sendAndConfirmIx([ix]);
     logger.info({ signature, agentId: intent.agentId, to: peer.toBase58() }, "Inter-agent transfer confirmed on devnet.");
     return signature;
   }

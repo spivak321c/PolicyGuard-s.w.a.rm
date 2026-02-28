@@ -9,6 +9,17 @@ import {
 import { SwarmExecutor } from "./swarm-executor";
 import type { IAgentDecisionEngine } from "./types";
 
+
+function shortAddress(address: string, left = 4, right = 4): string {
+  if (address.length <= left + right + 3) return address;
+  return `${address.slice(0, left)}...${address.slice(-right)}`;
+}
+
+function printAgentHeader(agentId: string): void {
+  console.log(`
+[${agentId}]`);
+}
+
 function parseFlag(args: string[], flag: string): string | undefined {
   const hit = args.find((a) => a.startsWith(`--${flag}=`));
   return hit ? hit.split("=").slice(1).join("=") : undefined;
@@ -73,23 +84,59 @@ async function runSwarm(args: string[]): Promise<void> {
   const engine = buildEngine(args);
 
   const engineName = engine.constructor.name;
-  console.log(`Engine: ${engineName} | Agents: ${count} | RPC: ${rpc || "devnet (default)"}`);
+  console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.log("🚀 Starting PolicyGuard Swarm Run");
+  console.log(`• Engine: ${engineName}`);
+  console.log(`• Agents: ${count}`);
+  console.log(`• RPC: ${rpc || "devnet (default)"}`);
+  console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
   const swarm = rpc ? new SwarmExecutor(rpc, engine) : new SwarmExecutor(undefined, engine);
-  swarm.spawnAgents(count);
+  const agents = swarm.spawnAgents(count);
+  console.log("👥 Spawned agents:");
+  for (const agent of agents) {
+    console.log(`   - ${agent.id} (${agent.role}) wallet=${shortAddress(agent.walletAddress)}`);
+  }
 
   // Live per-agent event output.
+  swarm.events.on("coordination.note", (e) => {
+    const stage = String(e.payload.stage ?? "note");
+    const message = String(e.payload.message ?? "");
+    const detail = typeof e.payload.detail === "string" ? ` | ${e.payload.detail}` : "";
+    const rationale = typeof e.payload.rationale === "string" ? `\n   💬 Rationale: ${e.payload.rationale}` : "";
+    const reason = typeof e.payload.reason === "string" ? `\n   ⚠️ Reason: ${e.payload.reason}` : "";
+    const signature = typeof e.payload.signature === "string" ? `\n   🔗 Tx: ${e.payload.signature}` : "";
+    console.log(`[${e.agentId}] 🛰️ ${stage}: ${message}${detail}${rationale}${reason}${signature}`);
+  });
+
   swarm.events.on("intent.created", (e) => {
-    const intent = e.payload.intent as { protocol: string; amountSol: number };
-    console.log(`[${e.agentId}] 📋 ${intent?.protocol ?? "?"} ${intent?.amountSol ?? "?"}◎`);
+    const intent = e.payload.intent as {
+      protocol: string;
+      amountSol: number;
+      slippageBps: number;
+      rationale: string;
+      inputMint?: string;
+      outputMint?: string;
+    };
+    printAgentHeader(e.agentId);
+    console.log(`🧠 Thinking result: I want to use ${intent?.protocol ?? "?"} for ${intent?.amountSol ?? "?"} SOL.`);
+    console.log(`📦 Intent: slippage=${intent?.slippageBps ?? "?"}bps`);
+    if (intent?.inputMint && intent?.outputMint) {
+      console.log(`🔁 Route: ${shortAddress(intent.inputMint, 6, 6)} → ${shortAddress(intent.outputMint, 6, 6)}`);
+    }
+    console.log(`💬 Why: ${intent?.rationale ?? "No rationale provided"}`);
   });
+
   swarm.events.on("intent.executed", (e) => {
-    console.log(`[${e.agentId}] ✅ Signature: ${e.payload.sig as string}`);
+    const intent = e.payload.intent as { protocol?: string; amountSol?: number } | undefined;
+    console.log(`[${e.agentId}] ✅ Transaction confirmed (${intent?.protocol ?? "intent"}, ${intent?.amountSol ?? "?"} SOL)`);
+    console.log(`   🔗 Signature: ${e.payload.sig as string}`);
   });
+
   swarm.events.on("intent.rejected", (e) => {
     const err = e.payload.error;
-    const phase = e.payload.phase === "generation" ? "[GENERATE_ERROR]" : "[POLICY_REJECTED]";
-    console.log(`[${e.agentId}] ❌ ${phase}: ${err instanceof Error ? err.message : String(err)}`);
+    const phase = e.payload.phase === "generation" ? "intent generation" : "policy checks";
+    console.log(`[${e.agentId}] ❌ Rejected during ${phase}: ${err instanceof Error ? err.message : String(err)}`);
   });
 
   // Automatically ensure airdrops on devnet if not explicitly disabled.
@@ -132,6 +179,36 @@ async function attackTest(args: string[]): Promise<void> {
     console.log("⚠️  Unexpected: intent was NOT rejected.");
   } catch (err) {
     console.log("✅ Rejected as expected:", err instanceof Error ? err.message : err);
+  }
+
+  const maliciousAmount = {
+    ...malicious,
+    amountSol: 10,
+    slippageBps: 80,
+    rationale: "Valid rationale to appear safe while draining funds."
+  };
+
+  console.log("Simulating malicious intent (amountSol=10, rationale='valid')...");
+  try {
+    await agent.processIntent(maliciousAmount);
+    console.log("⚠️  Unexpected: intent was NOT rejected.");
+  } catch (err) {
+    console.log("✅ Rejected [amount too large]:", err instanceof Error ? err.message : err);
+  }
+
+  const maliciousSlippage = {
+    ...malicious,
+    amountSol: 0.1,
+    slippageBps: 500,
+    rationale: "Valid rationale to appear safe while hiding extreme slippage."
+  };
+
+  console.log("Simulating malicious intent (amountSol=0.1, slippageBps=500, rationale='valid')...");
+  try {
+    await agent.processIntent(maliciousSlippage);
+    console.log("⚠️  Unexpected: intent was NOT rejected.");
+  } catch (err) {
+    console.log("✅ Rejected [slippage too high]:", err instanceof Error ? err.message : err);
   }
 }
 
