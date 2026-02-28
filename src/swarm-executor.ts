@@ -16,7 +16,7 @@ import { PolicyVaultClient } from "./policy-vault";
 import type { AgentIntent, SwarmAgent, SwarmEvent } from "./types";
 import pino from "pino";
 
-const logger = pino({ name: "swarm-executor" });
+const logger = pino({ name: "swarm-executor", level: process.env.SWARM_TECHNICAL_LOGS === "1" ? "info" : "silent" });
 
 interface AnchorWalletLike {
   publicKey: Keypair["publicKey"];
@@ -122,14 +122,34 @@ export class SwarmExecutor {
         processIntent: async (intent: AgentIntent) => {
           agent.status = "executing";
           this.emitEvent("intent.created", agent.id, { intent });
+          this.emitEvent("coordination.note", agent.id, {
+            stage: "policy-check",
+            message: "Requesting PolicyGuard approval before signing.",
+            detail: this.describeIntent(intent)
+          });
           try {
+            this.emitEvent("coordination.note", agent.id, {
+              stage: "transaction",
+              message: "Policy approved. Submitting transaction to Solana devnet.",
+              detail: this.describeIntent(intent)
+            });
             const sig = await guard.validateAndExecute(intent);
             agent.dailySpendSol += intent.amountSol;
             this.emitEvent("intent.executed", agent.id, { sig, intent });
+            this.emitEvent("coordination.note", agent.id, {
+              stage: "transaction",
+              message: "Transaction confirmed on-chain.",
+              signature: sig
+            });
             agent.status = "idle";
             return sig;
           } catch (error) {
             this.emitEvent("intent.rejected", agent.id, { error, intent });
+            this.emitEvent("coordination.note", agent.id, {
+              stage: "halt",
+              message: "Execution halted due to rejection.",
+              reason: error instanceof Error ? error.message : String(error)
+            });
             agent.status = "paused";
             throw error;
           }
@@ -224,6 +244,13 @@ export class SwarmExecutor {
     );
   }
 
+  private describeIntent(intent: AgentIntent): string {
+    const route = `${intent.protocol.toUpperCase()} ${intent.type}`;
+    const amount = `${intent.amountSol} SOL`;
+    const slippage = `${intent.slippageBps}bps`;
+    return `${route} | amount=${amount} | slippage=${slippage}`;
+  }
+
   // ── Run all agents concurrently ──────────────────────────────────────────────
   // Uses Promise.allSettled so a single agent rejection does not abort the swarm.
 
@@ -234,12 +261,26 @@ export class SwarmExecutor {
     }
 
     const tasks = this.agents.map(async (agent, index): Promise<SwarmRunResult> => {
+      const marketBias = index % 2 === 0 ? "bullish" : "neutral";
+      const protocolPreference = index % 3 === 0 ? "raydium" : "jupiter";
       try {
-        console.log(`  [${agent.id}] Thinking...`);
+        agent.status = "planning";
+        this.emitEvent("coordination.note", agent.id, {
+          stage: "thinking",
+          message: "Analyzing market context and drafting an intent.",
+          marketBias,
+          protocolPreference
+        });
         const intent = await this.decisionEngine.buildIntent({
           agentId: agent.id,
-          marketBias: index % 2 === 0 ? "bullish" : "neutral",
-          protocolPreference: index % 3 === 0 ? "raydium" : "jupiter"
+          marketBias,
+          protocolPreference
+        });
+        this.emitEvent("coordination.note", agent.id, {
+          stage: "communication",
+          message: "Intent drafted and shared with the swarm coordinator.",
+          rationale: intent.rationale,
+          detail: this.describeIntent(intent)
         });
 
         const sig = await agent.processIntent(intent);
@@ -249,6 +290,11 @@ export class SwarmExecutor {
         // Ensure intent.rejected event fires even if buildIntent fails
         if (agent.status !== "executing") {
           this.emitEvent("intent.rejected", agent.id, { error: message, phase: "generation" });
+          this.emitEvent("coordination.note", agent.id, {
+            stage: "halt",
+            message: "Intent generation failed before execution.",
+            reason: message
+          });
         }
         return { agentId: agent.id, status: "rejected", error: message };
       }

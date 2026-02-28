@@ -20,7 +20,7 @@ import type { AgentIntent, PolicyConfig, PolicyAuditRecord } from "./types";
 import { PolicyViolationError } from "./types";
 import { PolicyVaultClient } from "./policy-vault";
 
-const logger = pino({ name: "policy-guard" });
+const logger = pino({ name: "policy-guard", level: process.env.SWARM_TECHNICAL_LOGS === "1" ? "info" : "silent" });
 
 const JUPITER_QUOTE_URL = "https://lite-api.jup.ag/swap/v1/quote";
 const JUPITER_PRICE_URL = "https://api.jup.ag/price/v3";

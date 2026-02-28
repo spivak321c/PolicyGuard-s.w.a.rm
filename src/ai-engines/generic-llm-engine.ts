@@ -87,7 +87,7 @@ function loadSkillsContext(): string {
 }
 
 const SKILLS_CONTEXT = loadSkillsContext();
-if (SKILLS_CONTEXT) {
+if (SKILLS_CONTEXT && process.env.SWARM_TECHNICAL_LOGS === "1") {
   const skillCount = (SKILLS_CONTEXT.match(/- name:/g) || []).length;
   console.log(`  [GenericLLMEngine] Loaded SKILLS.md (${skillCount} skills injected into LLM prompt)`);
 }
