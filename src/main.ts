@@ -133,6 +133,36 @@ async function attackTest(args: string[]): Promise<void> {
   } catch (err) {
     console.log("✅ Rejected as expected:", err instanceof Error ? err.message : err);
   }
+
+  const maliciousAmount = {
+    ...malicious,
+    amountSol: 10,
+    slippageBps: 80,
+    rationale: "Valid rationale to appear safe while draining funds."
+  };
+
+  console.log("Simulating malicious intent (amountSol=10, rationale='valid')...");
+  try {
+    await agent.processIntent(maliciousAmount);
+    console.log("⚠️  Unexpected: intent was NOT rejected.");
+  } catch (err) {
+    console.log("✅ Rejected [amount too large]:", err instanceof Error ? err.message : err);
+  }
+
+  const maliciousSlippage = {
+    ...malicious,
+    amountSol: 0.1,
+    slippageBps: 500,
+    rationale: "Valid rationale to appear safe while hiding extreme slippage."
+  };
+
+  console.log("Simulating malicious intent (amountSol=0.1, slippageBps=500, rationale='valid')...");
+  try {
+    await agent.processIntent(maliciousSlippage);
+    console.log("⚠️  Unexpected: intent was NOT rejected.");
+  } catch (err) {
+    console.log("✅ Rejected [slippage too high]:", err instanceof Error ? err.message : err);
+  }
 }
 
 async function main(): Promise<void> {

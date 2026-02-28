@@ -2,70 +2,98 @@
 
 A Bun-native Solana devnet prototype for the Superteam Nigeria **Agentic Wallet** bounty. This project demonstrates secure automated signing, policy-gated execution, and a scalable multi-agent swarm where each agent owns an isolated wallet — powered by [Solana Agent Kit](https://github.com/sendaifun/solana-agent-kit) for wallet execution.
 
-## 1-command setup (Bun)
+## Prerequisites
+
+- [Bun](https://bun.sh/) installed (`bun --version`)
+- Solana CLI installed (`solana --version`) for devnet airdrops
+- A Solana devnet RPC (default is public devnet; optional custom RPC via `SOLANA_RPC_URL`)
+
+## Environment variables (set these first)
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `SOLANA_RPC_URL` | No | Custom devnet RPC endpoint |
+| `AGENT_ENGINE` | No | `scripted` (default) \| `groq` \| `generic` |
+| `GROQ_API_KEY` | Yes, for `--engine=groq` | Groq API key |
+| `LLM_ENDPOINT` | Yes, for `--engine=generic` | OpenAI-compatible chat completions endpoint |
+
+### Recommended setup examples
 
 ```bash
-bun install && bun run src/main.ts run-swarm --agents=2 --engine=groq --funder=funder.json
+# Scripted engine (no AI key required)
+export AGENT_ENGINE=scripted
+
+# Groq engine
+export AGENT_ENGINE=groq
+export GROQ_API_KEY="your_groq_key"
+
+# Generic LLM engine (OpenAI-compatible API)
+export AGENT_ENGINE=generic
+export LLM_ENDPOINT="https://api.groq.com/openai/v1/chat/completions"
+export LLM_API_KEY="your_provider_key"
+export LLM_MODEL="llama-3.1-8b-instant"
+
+# Optional: custom devnet RPC
+export SOLANA_RPC_URL="https://api.devnet.solana.com"
 ```
+
+## Quick start (judge-friendly)
+
+1. Install dependencies:
+   ```bash
+   bun install
+   ```
+2. Create (or reuse) a funder wallet file and print its public key:
+   ```bash
+   bun run src/main.ts run-swarm --agents=2 --engine=scripted --funder=funder.json
+   ```
+3. Fund that printed funder public key on devnet:
+   ```bash
+   solana airdrop 5 <FUNDER_PUBLIC_KEY> --url devnet
+   ```
+4. Run the swarm with your selected engine:
+   ```bash
+   # Scripted (no API key)
+   bun run src/main.ts run-swarm --agents=2 --engine=scripted --funder=funder.json
+
+   # Groq (requires GROQ_API_KEY)
+   bun run src/main.ts run-swarm --agents=2 --engine=groq --funder=funder.json
+
+   # Generic OpenAI-compatible provider (requires LLM_ENDPOINT + LLM_MODEL)
+   bun run src/main.ts run-swarm --agents=2 --engine=generic --funder=funder.json
+   ```
+5. Run the attack simulation:
+   ```bash
+   bun run src/main.ts attack-test
+   ```
 
 ## Commands
 
 ```bash
 bun run src/main.ts create-wallet
+bun run src/main.ts run-swarm --agents=2 --engine=scripted --funder=funder.json
 bun run src/main.ts run-swarm --agents=2 --engine=groq --funder=funder.json
+bun run src/main.ts run-swarm --agents=2 --engine=generic --funder=funder.json
 bun run src/main.ts attack-test
 bun run example
 bun run test
 bun run build
 ```
 
-## How to run (step-by-step)
+## AI Agent Integration
 
-1. Install dependencies:
-   ```bash
-   bun install
-   ```
-2. Generate a funder wallet (first run creates `funder.json` and prints the public key):
-   ```bash
-   bun run src/main.ts run-swarm --agents=2 --engine=groq --funder=funder.json
-   ```
-3. Fund the funder wallet via the [Solana devnet faucet](https://faucet.solana.com/) or CLI:
-   ```bash
-   solana airdrop 5 <FUNDER_PUBLIC_KEY> --url devnet
-   ```
-4. Run the swarm again (the funder wallet distributes 0.3 SOL to each agent automatically):
-   ```bash
-   bun run src/main.ts run-swarm --agents=2 --engine=groq --funder=funder.json
-   ```
-5. Generate a standalone isolated wallet:
-   ```bash
-   bun run src/main.ts create-wallet
-   ```
-6. Run the malicious-intent safety simulation:
-   ```bash
-   bun run src/main.ts attack-test
-   ```
+The swarm supports three decision engine modes selected by `--engine` (or `AGENT_ENGINE`):
+- `scripted` (default): no external API key required.
+- `groq`: requires `GROQ_API_KEY`.
+- `generic`: requires `LLM_ENDPOINT`, `LLM_MODEL`, and optional `LLM_API_KEY`.
 
 RPC override options (for devnet rate limits):
 - CLI flag: `--rpc=https://your-rpc`
 - Environment variable fallback:
   ```bash
   export SOLANA_RPC_URL="https://your-rpc"
-  bun run src/main.ts run-swarm --agents=2 --funder=funder.json
+  bun run src/main.ts run-swarm --agents=2 --engine=scripted --funder=funder.json
   ```
-
-## AI Agent Integration
-
-The swarm supports three decision engine modes selectable via `--engine` flag or `AGENT_ENGINE` env var.
-
-### Environment variables
-
-| Variable | Required | Purpose |
-|---|---|---|
-| `SOLANA_RPC_URL` | No | Custom devnet RPC (overrides default) |
-| `AGENT_ENGINE` | No | `scripted` (default) \| `groq` \| `openai` |
-| `GROQ_API_KEY` | For Groq | Groq developer key — [console.groq.com](https://console.groq.com) |
-| `OPENAI_API_KEY` | For OpenAI | OpenAI API key — [platform.openai.com](https://platform.openai.com) |
 
 ### Running with Groq (llama-3.1-8b-instant)
 
@@ -74,23 +102,25 @@ export GROQ_API_KEY="your_groq_key"
 bun run src/main.ts run-swarm --agents=2 --engine=groq --funder=funder.json
 ```
 
-### Running with OpenAI (gpt-4o-mini)
+### Running with a generic OpenAI-compatible provider
 
 ```bash
-export OPENAI_API_KEY="your_openai_key"
-bun run src/main.ts run-swarm --agents=2 --engine=openai --funder=funder.json
+export LLM_ENDPOINT="https://api.groq.com/openai/v1/chat/completions"
+export LLM_API_KEY="your_provider_key"
+export LLM_MODEL="llama-3.1-8b-instant"
+bun run src/main.ts run-swarm --agents=2 --engine=generic --funder=funder.json
 ```
 
 ### Running the full example (all three modes)
 
 ```bash
 # No keys = scripted only. Set any/both keys to enable AI sections.
-GROQ_API_KEY=gsk_... OPENAI_API_KEY=sk-... bun run example
+GROQ_API_KEY=gsk_... LLM_ENDPOINT=https://api.groq.com/openai/v1/chat/completions LLM_MODEL=llama-3.1-8b-instant bun run example
 ```
 
 ### How AI engines work
 
-Both `GroqDecisionEngine` and `OpenAIDecisionEngine` (in `src/ai-engines/`) implement `IAgentDecisionEngine`. They send a **constrained system prompt** that forces the model to output only a JSON `AgentIntent` object — no free-form prose, no key access. Every LLM response is field-validated before entering PolicyGuard. If parsing fails, a safe scripted fallback is used automatically.
+Both `GroqDecisionEngine` and `GenericLLMEngine` (in `src/ai-engines/`) implement `IAgentDecisionEngine`. They send a **constrained system prompt** that forces the model to output only a JSON `AgentIntent` object — no free-form prose, no key access. Every LLM response is field-validated before entering PolicyGuard. If parsing fails, a safe scripted fallback is used automatically.
 
 ```ts
 import { GroqDecisionEngine } from "./src/agent-logic";
@@ -137,7 +167,8 @@ This revision is designed to satisfy the bounty judging criteria end-to-end:
 
 Notes:
 - Agents are funded via a centralized **funder wallet** (`--funder=funder.json`) that distributes 0.3 SOL to each agent via `SystemProgram.transfer`.
-- **Jupiter path**: fetches a real quote from Jupiter API, then transfers SOL to a **peer agent** using `sendTx` from Solana Agent Kit.
+- **Jupiter swap path**: fetches a real quote from Jupiter API, then transfers SOL to a **peer agent** using direct `Connection` + signer transaction signing/confirmation.
+Note: Jupiter swap transactions use mainnet Address Lookup Tables incompatible with devnet, so the quote proves live API connectivity while the SOL transfer proves autonomous on-chain signing — this is the correct devnet-compatible pattern.
 - **Raydium path**: creates an **SPL token mint**, mints tokens to the agent, then transfers **SPL tokens to a peer agent** — proving real protocol interaction with the Token Program.
 - `PolicyVaultClient` defaults to deterministic dry-run logging for local reliability. Set `POLICY_VAULT_ONCHAIN=true` to force on-chain logging attempts.
 - `attack-test` executes a malicious intent through `PolicyGuard` and prints the actual rejection result.
@@ -145,7 +176,7 @@ Notes:
 ## Architecture overview
 
 - `src/agent-logic.ts`: AI decision engines (scripted, Groq, generic LLM) that only produce intents — no key access.
-- `src/policy-guard.ts`: Security gate with 8 fail-fast validations + execution via `SolanaAgentKit` / `sendTx`.
+- `src/policy-guard.ts`: Security gate with 8 fail-fast validations + execution via `SolanaAgentKit` + direct transaction signing/confirmation.
 - `src/policy-vault.ts`: Anchor-powered on-chain audit logger placeholder with PDA derivation.
 - `src/swarm-executor.ts`: Two-pass agent spawner with peer address distribution and event-driven orchestration.
 - `src/main.ts`: CLI entrypoint for wallet creation, swarm run, funder wallet management, and attack simulation.
@@ -154,7 +185,7 @@ Notes:
 
 1. **Working agentic wallet**
    - Programmatic wallet creation through `Keypair.generate()` → `KeypairWallet` → `SolanaAgentKit`.
-   - Automated signing handled via `sendTx` from Solana Agent Kit, outside AI intent generation.
+   - Automated signing handled in `PolicyGuard` via direct signer-backed transaction submission, outside AI intent generation.
    - SOL held and transferred between agents; SPL tokens created, minted, and transferred.
    - Jupiter quote verification + confirmed inter-agent SOL transfer.
    - Raydium API check + SPL token mint creation + inter-agent SPL token transfer.
