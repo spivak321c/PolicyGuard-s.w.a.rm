@@ -94,7 +94,7 @@ export class SwarmExecutor {
     this.decisionEngine = decisionEngine ?? new ScriptedDecisionEngine();
   }
 
-  spawnAgents(count = 6): SwarmAgent[] {
+  spawnAgents(count = 6, engineMap?: Map<number, IAgentDecisionEngine>): SwarmAgent[] {
     // Two-pass spawn: first generate keypairs, then create PolicyGuards with peer addresses.
     const keypairs: Keypair[] = [];
     for (let i = 0; i < count; i += 1) {
@@ -112,6 +112,8 @@ export class SwarmExecutor {
       const config = getDefaultPolicyConfig();
       // Pass all agent addresses so PolicyGuard can target peers (not self).
       const guard = new PolicyGuard(config, this.connection, keypair, vault, allAddresses);
+
+      const agentEngine = engineMap?.get(i) ?? this.decisionEngine;
 
       const agent: SwarmAgent = {
         id: `agent-${i + 1}`,
@@ -156,6 +158,7 @@ export class SwarmExecutor {
         }
       };
 
+      (agent as any)._engine = agentEngine;
       this.agents.push(agent);
     }
 
@@ -262,7 +265,8 @@ export class SwarmExecutor {
 
     const tasks = this.agents.map(async (agent, index): Promise<SwarmRunResult> => {
       const marketBias = index % 2 === 0 ? "bullish" : "neutral";
-      const protocolPreference = index % 3 === 0 ? "raydium" : "jupiter";
+      const protocols = ["raydium", "orca", "spl-token-swap"] as const;
+      const protocolPreference = protocols[index % protocols.length]!;
       try {
         agent.status = "planning";
         this.emitEvent("coordination.note", agent.id, {
@@ -271,7 +275,8 @@ export class SwarmExecutor {
           marketBias,
           protocolPreference
         });
-        const intent = await this.decisionEngine.buildIntent({
+        const agentEngine = (agent as any)._engine ?? this.decisionEngine;
+        const intent = await agentEngine.buildIntent({
           agentId: agent.id,
           marketBias,
           protocolPreference

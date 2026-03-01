@@ -6,4 +6,5 @@ dashboard/node_modules/
 dashboard/.svelte-kit/
 dashboard/build/
 funder.json
-tests
+*.keypair.json
+ledger-*.json

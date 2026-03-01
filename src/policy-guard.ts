@@ -1,5 +1,6 @@
 import { formatISO } from "date-fns";
 import pino from "pino";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import {
   LAMPORTS_PER_SOL,
   SystemProgram,
@@ -13,27 +14,28 @@ import {
   createMint,
   getOrCreateAssociatedTokenAccount,
   mintTo,
-  transfer as splTransfer
+  transfer as splTransfer,
+  TOKEN_PROGRAM_ID
 } from "@solana/spl-token";
 import { SolanaAgentKit, KeypairWallet } from "solana-agent-kit";
+import { Raydium, TxVersion, DEVNET_PROGRAM_ID, CurveCalculator } from "@raydium-io/raydium-sdk-v2";
+import { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken, ORCA_WHIRLPOOL_PROGRAM_ID, IGNORE_CACHE } from "@orca-so/whirlpools-sdk";
+import { Percentage } from "@orca-so/common-sdk";
+import Decimal from "decimal.js";
+import { AnchorProvider } from "@coral-xyz/anchor";
+import BN from "bn.js";
 import type { AgentIntent, PolicyConfig, PolicyAuditRecord } from "./types";
 import { PolicyViolationError } from "./types";
 import { PolicyVaultClient } from "./policy-vault";
 
 const logger = pino({ name: "policy-guard", level: process.env.SWARM_TECHNICAL_LOGS === "1" ? "info" : "silent" });
 
-const JUPITER_QUOTE_URL = "https://lite-api.jup.ag/swap/v1/quote";
-const JUPITER_PRICE_URL = "https://api.jup.ag/price/v3";
-const JUPITER_TOKENS_URL = "https://api.jup.ag/tokens/v2/search";
-const RAYDIUM_INFO_URL = "https://api-v3.raydium.io/main/info";
-const RAYDIUM_POOLS_URL = "https://api-v3.raydium.io/pools/info/list";
-
-// Well-known Solana mints for Jupiter interactions.
-const SOL_MINT = "So11111111111111111111111111111111111111112";
-const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const ORCA_DEVNET_SOL_USDC_POOL = "3KBZiL2g8C7tiJ32hTv5v3KM7aK9htpqTw4cTXz1HvPt";
+const ORCA_DEVNET_USDC_MINT     = "BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k";
+const SOL_MINT_ADDRESS          = "So11111111111111111111111111111111111111112";
 
 export class PolicyGuard {
-  private readonly spendLedger = new Map<string, { date: string; spentSol: number; lastIntentTs: number }>();
+  private readonly ledgerPath: string;
   private readonly agentKit: SolanaAgentKit;
   private readonly peerAddresses: string[];
   private peerIndex = 0;
@@ -48,6 +50,7 @@ export class PolicyGuard {
     // Create a SolanaAgentKit instance using KeypairWallet for this agent.
     const wallet = new KeypairWallet(signer, connection.rpcEndpoint);
     this.agentKit = new SolanaAgentKit(wallet, connection.rpcEndpoint, {});
+    this.ledgerPath = `./ledger-${signer.publicKey.toBase58().slice(0,8)}.json`;
     this.peerAddresses = peerAddresses.filter(
       (addr) => addr !== signer.publicKey.toBase58()
     );
@@ -62,6 +65,25 @@ export class PolicyGuard {
     const addr = this.peerAddresses[this.peerIndex % this.peerAddresses.length]!;
     this.peerIndex += 1;
     return new PublicKey(addr);
+  }
+
+  private readLedgerEntry(key: string): { date: string; spentSol: number; lastIntentTs: number } | undefined {
+    if (!existsSync(this.ledgerPath)) {
+      return undefined;
+    }
+
+    const contents = readFileSync(this.ledgerPath, "utf8");
+    const ledger = JSON.parse(contents) as Record<string, { date: string; spentSol: number; lastIntentTs: number }>;
+    return ledger[key];
+  }
+
+  private writeLedgerEntry(key: string, value: { date: string; spentSol: number; lastIntentTs: number }): void {
+    const ledger = existsSync(this.ledgerPath)
+      ? JSON.parse(readFileSync(this.ledgerPath, "utf8")) as Record<string, { date: string; spentSol: number; lastIntentTs: number }>
+      : {};
+
+    ledger[key] = value;
+    writeFileSync(this.ledgerPath, JSON.stringify(ledger, null, 2));
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -93,7 +115,7 @@ export class PolicyGuard {
     // 5) Daily cumulative SOL ceiling.
     const key = intent.agentId;
     const day = formatISO(intent.timestamp, { representation: "date" });
-    const current = this.spendLedger.get(key);
+    const current = this.readLedgerEntry(key);
     const currentSpend = current && current.date === day ? current.spentSol : 0;
     if (currentSpend + intent.amountSol > this.config.maxSolDaily) {
       throw await this.violation(intent, "MAX_DAILY_EXCEEDED", `Daily spend limit of ${this.config.maxSolDaily} SOL would be exceeded (spent ${currentSpend} so far).`);
@@ -131,7 +153,7 @@ export class PolicyGuard {
     // ── All checks passed — execute. ──────────────────────────────────────────
     const signature = await this.execute(intent);
 
-    this.spendLedger.set(key, {
+    this.writeLedgerEntry(key, {
       date: day,
       spentSol: currentSpend + intent.amountSol,
       lastIntentTs: nowTs
@@ -165,16 +187,10 @@ export class PolicyGuard {
   private async execute(intent: AgentIntent): Promise<string> {
     logger.info({ protocol: intent.protocol, agentId: intent.agentId }, "Executing approved intent.");
 
-    if (intent.protocol === "jupiter" && intent.inputMint && intent.outputMint) {
-      return this.executeJupiterSwap(intent);
-    }
-
-    if (intent.protocol === "raydium") {
-      return this.executeRaydiumDemo(intent);
-    }
-
-    // Generic fallback for transfer intents.
-    return this.executeTransfer(intent);
+    if (intent.protocol === "raydium") return this.executeRaydiumCpmmSwap(intent);
+    if (intent.protocol === "orca") return this.executeOrcaWhirlpoolSwap(intent);
+    // spl-token-swap fallback
+    return this.executeSplTokenTransfer(intent);
   }
 
   private async sendAndConfirmIx(instructions: TransactionInstruction[]): Promise<string> {
@@ -188,109 +204,176 @@ export class PolicyGuard {
     return sig;
   }
 
-  // ── Jupiter quote + inter-agent SOL transfer ────────────────────────────────
-  // Jupiter's swap API returns mainnet ALT transactions that can't land on devnet.
-  // We fetch a real quote (proving dApp connectivity), then execute a real
-  // confirmed inter-agent SOL transfer via SolanaAgentKit.
+  // ── Raydium CPMM devnet swap demo ───────────────────────────────────────────
 
-  private async executeJupiterSwap(intent: AgentIntent): Promise<string> {
-    const amountLamports = Math.floor(intent.amountSol * LAMPORTS_PER_SOL);
-
-    // Step 1: Fetch real-time price from Jupiter Price API v3.
-    try {
-      const priceUrl = `${JUPITER_PRICE_URL}?ids=${SOL_MINT},${USDC_MINT}`;
-      const priceRes = await fetch(priceUrl);
-      if (priceRes.ok) {
-        const priceData = await priceRes.json() as Record<string, unknown>;
-        const data = priceData.data as Record<string, { price?: string }> | undefined;
-        const solPrice = data?.[SOL_MINT]?.price;
-        logger.info({ solPrice, agentId: intent.agentId }, "Jupiter Price API v3 — SOL/USD price fetched.");
-      }
-    } catch (err) {
-      logger.warn({ err, agentId: intent.agentId }, "Jupiter Price API unreachable, proceeding.");
-    }
-
-    // Step 2: Fetch token metadata from Jupiter Tokens API v2.
-    try {
-      const tokenUrl = `${JUPITER_TOKENS_URL}?query=${intent.inputMint}`;
-      const tokenRes = await fetch(tokenUrl);
-      if (tokenRes.ok) {
-        const tokenData = await tokenRes.json() as unknown[];
-        const tokenCount = Array.isArray(tokenData) ? tokenData.length : 0;
-        logger.info({ tokenCount, inputMint: intent.inputMint, agentId: intent.agentId }, "Jupiter Tokens API v2 — token metadata fetched.");
-      }
-    } catch (err) {
-      logger.warn({ err, agentId: intent.agentId }, "Jupiter Tokens API unreachable, proceeding.");
-    }
-
-    // Step 3: Fetch a real Jupiter swap quote to prove protocol connectivity.
-    const quoteUrl = new URL(JUPITER_QUOTE_URL);
-    quoteUrl.searchParams.set("inputMint", intent.inputMint!);
-    quoteUrl.searchParams.set("outputMint", intent.outputMint!);
-    quoteUrl.searchParams.set("amount", String(amountLamports));
-    quoteUrl.searchParams.set("slippageBps", String(intent.slippageBps));
-
-    const quoteRes = await fetch(quoteUrl.toString());
-    if (!quoteRes.ok) {
-      const body = await quoteRes.text();
-      throw await this.violation(intent, "JUPITER_QUOTE_FAILED", `Jupiter quote failed (${quoteRes.status}): ${body.slice(0, 200)}`);
-    }
-    const quoteData = await quoteRes.json() as Record<string, unknown>;
-    logger.info({
-      outAmount: quoteData.outAmount,
-      priceImpactPct: quoteData.priceImpactPct,
-      routePlan: Array.isArray(quoteData.routePlan) ? (quoteData.routePlan as unknown[]).length + " hops" : "unknown",
-      agentId: intent.agentId
-    }, "Jupiter swap quote received.");
-
-    // Step 4: Execute a real inter-agent SOL transfer via SolanaAgentKit.
-    const peer = this.getNextPeer();
-    logger.info({ agentId: intent.agentId, peer: peer.toBase58() }, "Jupiter quote verified — transferring SOL to peer agent.");
-
-    const ix = SystemProgram.transfer({
-      fromPubkey: this.signer.publicKey,
-      toPubkey: peer,
-      lamports: amountLamports
+  private async executeRaydiumCpmmSwap(intent: AgentIntent): Promise<string> {
+    console.log("→ [raydium] Step 1/10: loading Raydium SDK on devnet...");
+    const raydium = await Raydium.load({
+      connection: this.connection,
+      owner: this.signer,
+      cluster: "devnet",
+      disableLoadToken: true
     });
 
-    const signature = await this.sendAndConfirmIx([ix]);
-    logger.info({ signature, agentId: intent.agentId, to: peer.toBase58() }, "Inter-agent SOL transfer confirmed on devnet.");
-    return signature;
+    console.log("→ [raydium] Step 2/10: creating mintA + mintB...");
+    const mintA = await createMint(this.connection, this.signer, this.signer.publicKey, null, 9);
+    const mintB = await createMint(this.connection, this.signer, this.signer.publicKey, null, 9);
+
+    console.log("→ [raydium] Step 3/10: creating ATAs and minting supply...");
+    const ownerTokenA = await getOrCreateAssociatedTokenAccount(
+      this.connection,
+      this.signer,
+      mintA,
+      this.signer.publicKey,
+      false,
+      undefined,
+      undefined,
+      TOKEN_PROGRAM_ID
+    );
+    const ownerTokenB = await getOrCreateAssociatedTokenAccount(
+      this.connection,
+      this.signer,
+      mintB,
+      this.signer.publicKey,
+      false,
+      undefined,
+      undefined,
+      TOKEN_PROGRAM_ID
+    );
+    const initialSupply = 1_000_000_000;
+    await mintTo(this.connection, this.signer, mintA, ownerTokenA.address, this.signer, initialSupply, [], undefined, TOKEN_PROGRAM_ID);
+    await mintTo(this.connection, this.signer, mintB, ownerTokenB.address, this.signer, initialSupply, [], undefined, TOKEN_PROGRAM_ID);
+
+    console.log("→ [raydium] Step 4/10: fetching CPMM fee configs from API...");
+    const feeConfigs = await raydium.api.fetchCpmmConfigs();
+    const feeConfig = feeConfigs[0];
+    if (!feeConfig) {
+      throw await this.violation(intent, "RAYDIUM_CONFIG_MISSING", "No Raydium CPMM fee config available on devnet.");
+    }
+
+    console.log("→ [raydium] Step 5/10: creating CPMM pool...");
+    const cpmmProgram = (DEVNET_PROGRAM_ID as typeof DEVNET_PROGRAM_ID & { CPMM_PROGRAM?: PublicKey }).CPMM_PROGRAM
+      ?? DEVNET_PROGRAM_ID.CREATE_CPMM_POOL_PROGRAM;
+    const poolCreateTx = await raydium.cpmm.createPool({
+      programId: cpmmProgram,
+      poolFeeAccount: DEVNET_PROGRAM_ID.CREATE_CPMM_POOL_FEE_ACC,
+      mintA: {
+        address: mintA.toBase58(),
+        decimals: 9,
+        programId: TOKEN_PROGRAM_ID.toBase58()
+      },
+      mintB: {
+        address: mintB.toBase58(),
+        decimals: 9,
+        programId: TOKEN_PROGRAM_ID.toBase58()
+      },
+      mintAAmount: new BN(initialSupply),
+      mintBAmount: new BN(initialSupply),
+      startTime: new BN(Math.floor(Date.now() / 1000) - 1),
+      feeConfig,
+      associatedOnly: false,
+      ownerInfo: {
+        feePayer: this.signer.publicKey,
+        useSOLBalance: true
+      },
+      txVersion: TxVersion.V0
+    });
+    const createPoolResult = await poolCreateTx.execute({ sendAndConfirm: true });
+    const poolId = poolCreateTx.extInfo.address.poolId.toBase58();
+    console.log(`→ [raydium] CPMM pool created: ${poolId} (tx: ${createPoolResult.txId})`);
+
+    console.log("→ [raydium] Step 6/10: waiting 1.5s for devnet RPC indexing...");
+    await new Promise((r) => setTimeout(r, 1500));
+
+    console.log("→ [raydium] Step 7/10: fetching pool info from RPC...");
+    const rpcPools = await raydium.cpmm.getRpcPoolInfos([poolId]);
+    const rpcPool = rpcPools[poolId];
+    if (!rpcPool) {
+      throw await this.violation(intent, "RAYDIUM_POOL_NOT_FOUND", `Pool ${poolId} not found via RPC after creation.`);
+    }
+
+    console.log("→ [raydium] Step 8/10: quoting with CurveCalculator.swap...");
+    const curveSwap = CurveCalculator as unknown as {
+      swap: (inputAmount: BN, baseReserve: BN, quoteReserve: BN, tradeFeeRate: BN) => { inputAmount: BN; outputAmount: BN };
+    };
+    const quote = curveSwap.swap(
+      new BN(Math.floor(intent.amountSol * 1_000_000_000)),
+      rpcPool.baseReserve,
+      rpcPool.quoteReserve,
+      rpcPool.configInfo?.tradeFeeRate ?? new BN(0)
+    );
+
+    console.log("→ [raydium] Step 9/10: executing CPMM swap transaction...");
+    const poolInfo = await raydium.cpmm.getPoolInfoFromRpc(poolId);
+    const swapTx = await raydium.cpmm.swap({
+      poolInfo: poolInfo.poolInfo,
+      inputAmount: quote.inputAmount,
+      swapResult: {
+        inputAmount: quote.inputAmount,
+        outputAmount: quote.outputAmount
+      },
+      baseIn: true,
+      slippage: intent.slippageBps / 10_000,
+      txVersion: TxVersion.V0
+    });
+    const swapResult = await swapTx.execute({ sendAndConfirm: true });
+
+    console.log(`→ [raydium] Step 10/10: swap confirmed with txId ${swapResult.txId}`);
+    return swapResult.txId;
   }
 
-  // ── Raydium demo: SPL token mint + transfer ─────────────────────────────────
+  private async executeOrcaWhirlpoolSwap(intent: AgentIntent): Promise<string> {
+    try {
+      console.log("→ [orca] Step 1/5: building Anchor provider and Whirlpool context...");
+      const anchorWallet = {
+        publicKey: this.signer.publicKey,
+        signTransaction: async <T>(tx: T): Promise<T> => {
+          const txWithSign = tx as T & { sign?: (...args: unknown[]) => unknown; partialSign?: (...args: unknown[]) => unknown };
+          if (typeof txWithSign.sign === "function") txWithSign.sign(this.signer);
+          if (typeof txWithSign.partialSign === "function") txWithSign.partialSign(this.signer);
+          return tx;
+        },
+        signAllTransactions: async <T>(txs: T[]): Promise<T[]> => Promise.all(txs.map((tx) => anchorWallet.signTransaction(tx)))
+      };
+      const anchorProvider = new AnchorProvider(this.connection, anchorWallet, AnchorProvider.defaultOptions());
+      const ctx = WhirlpoolContext.withProvider(anchorProvider, ORCA_WHIRLPOOL_PROGRAM_ID);
+
+      console.log("→ [orca] Step 2/5: loading Whirlpool client and pool...");
+      const client = buildWhirlpoolClient(ctx);
+      const pool = await client.getPool(new PublicKey(ORCA_DEVNET_SOL_USDC_POOL));
+
+      console.log("→ [orca] Step 3/5: building swap quote by input token...");
+      const solMintKey = new PublicKey(SOL_MINT_ADDRESS);
+      const inputAmount = new BN(Math.floor(intent.amountSol * LAMPORTS_PER_SOL));
+      const slippageTolerance = Percentage.fromDecimal(new Decimal(intent.slippageBps).div(10_000));
+      const quote = await swapQuoteByInputToken(
+        pool,
+        solMintKey,
+        inputAmount,
+        slippageTolerance,
+        ctx.program.programId,
+        ctx.fetcher,
+        IGNORE_CACHE
+      );
+
+      console.log("→ [orca] Step 4/5: executing Whirlpool swap transaction...");
+      const txPayload = await pool.swap(quote);
+      const txId = await txPayload.buildAndExecute();
+
+      console.log(`→ [orca] Step 5/5: Whirlpool swap confirmed: ${txId}`);
+      return txId;
+    } catch (err) {
+      logger.warn({ err, agentId: intent.agentId }, "Orca Whirlpool swap failed, falling back to SPL token transfer.");
+      return this.executeSplTokenTransfer(intent);
+    }
+  }
+
+  // ── SPL token transfer fallback ─────────────────────────────────────────────
   // Creates an SPL token mint, mints tokens to the agent, then transfers tokens
   // to a peer agent. This demonstrates "hold SPL tokens" and "interact with a
   // protocol" (Token Program) — a real on-chain operation.
 
-  private async executeRaydiumDemo(intent: AgentIntent): Promise<string> {
-    // Step 0a: Verify Raydium API is reachable.
-    try {
-      const infoRes = await fetch(RAYDIUM_INFO_URL);
-      if (infoRes.ok) {
-        logger.info({ agentId: intent.agentId }, "Raydium Data API reachable.");
-      } else {
-        logger.warn({ status: infoRes.status, agentId: intent.agentId }, "Raydium Data API returned non-200, proceeding anyway.");
-      }
-    } catch (err) {
-      logger.warn({ err, agentId: intent.agentId }, "Raydium Data API unreachable, proceeding anyway.");
-    }
-
-    // Step 0b: Fetch pool data from Raydium to prove protocol interaction.
-    try {
-      const poolRes = await fetch(`${RAYDIUM_POOLS_URL}?poolType=all&poolSortField=liquidity&sortType=desc&pageSize=1&page=1`);
-      if (poolRes.ok) {
-        const poolData = await poolRes.json() as { data?: { count?: number; data?: unknown[] } };
-        const poolCount = poolData?.data?.count ?? 0;
-        const topPool = Array.isArray(poolData?.data?.data) && poolData.data.data.length > 0
-          ? (poolData.data.data[0] as Record<string, unknown>)?.id ?? "unknown"
-          : "unknown";
-        logger.info({ poolCount, topPool, agentId: intent.agentId }, "Raydium pool data fetched.");
-      }
-    } catch (err) {
-      logger.warn({ err, agentId: intent.agentId }, "Raydium pool data unreachable, proceeding.");
-    }
-
+  private async executeSplTokenTransfer(intent: AgentIntent): Promise<string> {
     // Step 1: Create a new SPL token mint on devnet.
     logger.info({ agentId: intent.agentId }, "Creating SPL token mint on devnet...");
     const mint = await createMint(

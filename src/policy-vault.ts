@@ -1,5 +1,6 @@
 import { AnchorProvider, BN, Program, web3 } from "@coral-xyz/anchor";
 import { PublicKey } from "@solana/web3.js";
+import { createMemoInstruction } from "@solana/spl-memo";
 import type { PolicyAuditRecord } from "./types";
 
 const POLICY_VAULT_PROGRAM_ID = new PublicKey("11111111111111111111111111111111");
@@ -16,6 +17,7 @@ export class PolicyVaultClient {
 
   async logAction(record: PolicyAuditRecord): Promise<string> {
     const [auditPda] = this.deriveAuditPda(record.agentId);
+    void auditPda;
 
     // Placeholder metadata write; in production wire to Anchor account serialization.
     const _anchorStylePayload = {
@@ -36,18 +38,25 @@ export class PolicyVaultClient {
       return `dryrun-${record.agentId}-${record.timestamp.getTime()}`;
     }
 
-    const ix = web3.SystemProgram.transfer({
-      fromPubkey: this.provider.publicKey,
-      toPubkey: auditPda,
-      lamports: 0
+    const memoString = JSON.stringify({
+      agentId: record.agentId,
+      approved: record.approved,
+      protocol: record.protocol,
+      amountSol: record.amountSol,
+      reason: record.reason,
+      ts: record.timestamp.toISOString()
     });
+
+    const ix = createMemoInstruction(memoString, [this.provider.publicKey]);
 
     const tx = new web3.Transaction().add(ix);
     tx.recentBlockhash = (await this.provider.connection.getLatestBlockhash()).blockhash;
     tx.feePayer = this.provider.publicKey;
 
-    return this.provider.sendAndConfirm(tx, [], {
+    const signature = await this.provider.sendAndConfirm(tx, [], {
       skipPreflight: true
     });
+    console.log(`→ [policy-vault] memo logged on-chain: ${signature}`);
+    return signature;
   }
 }

@@ -33,8 +33,8 @@ export interface GenericLLMConfig {
 const DEVNET_SOL = "So11111111111111111111111111111111111111112";
 const DEVNET_USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
-const ALLOWED_PROTOCOLS = ["jupiter", "raydium"] as const;
-const ALLOWED_TYPES = ["swap", "add-liquidity", "remove-liquidity", "transfer"] as const;
+const ALLOWED_PROTOCOLS = ["raydium", "orca", "spl-token-swap"] as const;
+const ALLOWED_TYPES = ["swap", "transfer"] as const;
 
 const SYSTEM_PROMPT = `
 You are an autonomous DeFi trading agent operating on Solana devnet.
@@ -42,13 +42,13 @@ Decide on ONE transaction intent per call.
 
 Respond with ONLY valid JSON matching this exact schema — no commentary, no markdown:
 {
-  "type":        "swap" | "add-liquidity" | "remove-liquidity" | "transfer",
-  "protocol":    "jupiter" | "raydium",
+  "type":        "swap" | "transfer",
+  "protocol":    "raydium" | "orca" | "spl-token-swap",
   "amountSol":   number between 0.01 and 0.4,
   "slippageBps": integer between 10 and 100,
   "rationale":   string of at least 20 characters explaining your decision
 }
-Rules: prefer jupiter for swaps, raydium for liquidity. Keep amountSol ≤ 0.4.
+Rules: use only the listed protocol and type choices. Keep amountSol ≤ 0.4.
 `.trim();
 
 /**
@@ -96,7 +96,7 @@ function safeParseIntent(
     raw: string,
     agentId: string,
     model: string,
-    protocolPreference: "jupiter" | "raydium"
+    protocolPreference: "raydium" | "orca" | "spl-token-swap"
 ): AgentIntent {
     try {
         // Strip markdown fences if the model included them.
@@ -104,7 +104,7 @@ function safeParseIntent(
         const parsed = JSON.parse(cleaned) as Record<string, unknown>;
 
         const type = ALLOWED_TYPES.includes(parsed.type as never) ? (parsed.type as AgentIntent["type"]) : "swap";
-        const protocol = ALLOWED_PROTOCOLS.includes(parsed.protocol as never) ? (parsed.protocol as "jupiter" | "raydium") : protocolPreference;
+        const protocol = ALLOWED_PROTOCOLS.includes(parsed.protocol as never) ? (parsed.protocol as "raydium" | "orca" | "spl-token-swap") : protocolPreference;
         const amountSol = typeof parsed.amountSol === "number" && parsed.amountSol > 0 && parsed.amountSol <= 0.4 ? parsed.amountSol : 0.1;
         const slippageBps = typeof parsed.slippageBps === "number" && parsed.slippageBps > 0 && parsed.slippageBps <= 100 ? Math.floor(parsed.slippageBps) : 50;
         const rationale = typeof parsed.rationale === "string" && parsed.rationale.trim().length >= 20
@@ -171,7 +171,7 @@ export class GenericLLMEngine implements IAgentDecisionEngine {
     async buildIntent(input: {
         agentId: string;
         marketBias: "bullish" | "bearish" | "neutral";
-        protocolPreference: "jupiter" | "raydium";
+        protocolPreference: "raydium" | "orca" | "spl-token-swap";
     }): Promise<AgentIntent> {
         const headers: Record<string, string> = {
             "Content-Type": "application/json"
