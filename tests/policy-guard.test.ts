@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Keypair, VersionedTransaction, MessageV0 } from "@solana/web3.js";
+import { Keypair } from "@solana/web3.js";
 import { PolicyGuard } from "../src/policy-guard";
 import { getDefaultPolicyConfig } from "../src/policy-config";
 import type { AgentIntent, PolicyConfig } from "../src/types";
@@ -26,33 +26,13 @@ vi.mock("solana-agent-kit", () => ({
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-// A valid 32-char base58 blockhash that satisfies Solana's length check.
 const FAKE_BLOCKHASH = "11111111111111111111111111111111";
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/**
- * Build a valid serialized VersionedTransaction.
- * When payerKeypair is provided, compile with that keypair as payer AND sign it,
- * so that guard.signer (which IS the payer) can call vTx.sign() successfully.
- */
-function makeFakeSwapTxBase64(payerKeypair?: Keypair): string {
-  const payer = payerKeypair ? payerKeypair.publicKey : Keypair.generate().publicKey;
-  const msg = MessageV0.compile({
-    payerKey: payer,
-    instructions: [],
-    recentBlockhash: FAKE_BLOCKHASH
-  });
-  const vTx = new VersionedTransaction(msg);
-  if (payerKeypair) vTx.sign([payerKeypair]);
-  return Buffer.from(vTx.serialize()).toString("base64");
-}
 
 function buildIntent(overrides: Partial<AgentIntent> = {}): AgentIntent {
   return {
     agentId: "agent-test",
     type: "swap",
-    protocol: "jupiter",
+    protocol: "orca",
     amountSol: 0.1,
     inputMint: "So11111111111111111111111111111111111111112",
     outputMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
@@ -73,7 +53,8 @@ function setupGuard(configOverride: Partial<PolicyConfig> = {}) {
     getLatestBlockhash: vi.fn(async () => ({ blockhash: FAKE_BLOCKHASH, lastValidBlockHeight: 9_999_999 })),
     sendTransaction: vi.fn(async () => "txSig"),
     sendRawTransaction: vi.fn(async () => "rawSig"),
-    confirmTransaction: vi.fn(async () => ({ value: { err: null } }))
+    confirmTransaction: vi.fn(async () => ({ value: { err: null } })),
+    getMinimumBalanceForRentExemption: vi.fn(async () => 0)
   } as never;
   const policyVault = { logAction: vi.fn(async () => "auditSig") } as never;
   const peerAddresses = [signer.publicKey.toBase58(), peer.publicKey.toBase58()];
@@ -81,31 +62,11 @@ function setupGuard(configOverride: Partial<PolicyConfig> = {}) {
   return { guard: new PolicyGuard(config, connection, signer, policyVault, peerAddresses), config, signer };
 }
 
-/**
- * Stub global fetch with a signer-aware Jupiter swap response.
- * The fake swapTransaction is compiled with that specific signer as payer,
- * so vTx.sign([signer]) inside PolicyGuard succeeds.
- */
-function stubFetch(signer?: Keypair): void {
-  const swapTx = makeFakeSwapTxBase64(signer);
+function stubFetch(): void {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string, init?: RequestInit) => {
       const urlStr = typeof url === "string" ? url : "";
-      // Jupiter swap POST — checked before the broader jup.ag match.
-      if (urlStr.includes("swap/v1/swap") && init?.method === "POST") {
-        return new Response(
-          JSON.stringify({ swapTransaction: swapTx }),
-          { status: 200, headers: { "content-type": "application/json" } }
-        );
-      }
-      // Jupiter quote GET.
-      if (urlStr.includes("jup.ag")) {
-        return new Response(
-          JSON.stringify({ outAmount: 99_000_000 }),
-          { status: 200, headers: { "content-type": "application/json" } }
-        );
-      }
       // Raydium health.
       if (urlStr.includes("raydium")) {
         return new Response(
@@ -118,7 +79,7 @@ function stubFetch(signer?: Keypair): void {
   );
 }
 
-// Default beforeEach stubs fetch with no signer (fine for tests that never hit Jupiter exec).
+// Default beforeEach stubs fetch.
 beforeEach(() => stubFetch());
 
 // ── PolicyGuard validation tests ──────────────────────────────────────────────
@@ -140,6 +101,7 @@ describe("PolicyGuard — 8-step validation", () => {
 
   it("allows allowlisted raydium protocol and resolves a signature", async () => {
     const { guard } = setupGuard();
+    vi.spyOn(guard as never, "execute" as never).mockResolvedValue("mock-sig");
     await expect(
       guard.validateAndExecute(buildIntent({ protocol: "raydium", rationale: "valid raydium rationale string" }))
     ).resolves.toBeTypeOf("string");
@@ -163,11 +125,11 @@ describe("PolicyGuard — 8-step validation", () => {
    * Check 5: two sequential intents on the same day must sum > daily cap.
    * The first intent (4.8 SOL) succeeds; the second (0.5 SOL) pushes total to 5.3
    * which exceeds the 5 SOL daily cap.
-   * We use jupiter protocol so we need the signer-aware fetch stub.
+   * We stub execution to avoid external RPC/protocol dependencies.
    */
   it("rejects daily cumulative ceiling (check 5)", async () => {
-    const { guard, signer } = setupGuard({ maxSolPerTransaction: 10, maxSolDaily: 5 });
-    stubFetch(signer); // Re-stub with correct signer for Jupiter exec path.
+    const { guard } = setupGuard({ maxSolPerTransaction: 10, maxSolDaily: 5 });
+    vi.spyOn(guard as never, "execute" as never).mockResolvedValue("mock-sig");
     await guard.validateAndExecute(buildIntent({ amountSol: 4.8, timestamp: new Date("2026-02-25T00:00:00Z") }));
     await expect(
       guard.validateAndExecute(buildIntent({ amountSol: 0.5, timestamp: new Date("2026-02-25T01:00:00Z") }))
@@ -183,11 +145,11 @@ describe("PolicyGuard — 8-step validation", () => {
 
   /**
    * Check 7: second intent within the cooldown window (10s) must be rejected.
-   * Again uses Jupiter exec path so needs signer-aware fetch stub.
+   * We stub execution to avoid external RPC/protocol dependencies.
    */
   it("rejects cooldown violation (check 7)", async () => {
-    const { guard, signer } = setupGuard();
-    stubFetch(signer); // Re-stub with correct signer.
+    const { guard } = setupGuard();
+    vi.spyOn(guard as never, "execute" as never).mockResolvedValue("mock-sig");
     const ts = new Date("2026-02-25T00:00:00Z");
     await guard.validateAndExecute(buildIntent({ timestamp: ts }));
     await expect(
@@ -240,7 +202,7 @@ describe("SwarmExecutor", () => {
         await firstAgent.processIntent({
           agentId: firstAgent.id,
           type: "swap",
-          protocol: "jupiter",
+          protocol: "orca",
           amountSol: 0.1,
           inputMint: "So11111111111111111111111111111111111111112",
           outputMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
