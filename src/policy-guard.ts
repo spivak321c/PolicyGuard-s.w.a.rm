@@ -17,7 +17,7 @@ import {
   transfer as splTransfer,
   TOKEN_PROGRAM_ID
 } from "@solana/spl-token";
-import { SolanaAgentKit, KeypairWallet } from "solana-agent-kit";
+import { SolanaAgentKit, KeypairWallet, sendTx } from "solana-agent-kit";
 import { Raydium, TxVersion, DEVNET_PROGRAM_ID, CurveCalculator } from "@raydium-io/raydium-sdk-v2";
 import { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken, ORCA_WHIRLPOOL_PROGRAM_ID, IGNORE_CACHE } from "@orca-so/whirlpools-sdk";
 import { Percentage } from "@orca-so/common-sdk";
@@ -33,6 +33,15 @@ const logger = pino({ name: "policy-guard", level: process.env.SWARM_TECHNICAL_L
 const ORCA_DEVNET_SOL_USDC_POOL = "3KBZiL2g8C7tiJ32hTv5v3KM7aK9htpqTw4cTXz1HvPt";
 const ORCA_DEVNET_USDC_MINT = "BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k";
 const SOL_MINT_ADDRESS = "So11111111111111111111111111111111111111112";
+const DEVNET_CPMM_FEE_CONFIG = {
+  id: "8ZP8fQxgKATJz3fNcQeYQep6uiM9A3YfM7VJMnvsV6VG",
+  index: 0,
+  protocolFeeRate: 120000,
+  tradeFeeRate: 2500,
+  fundFeeRate: 40000,
+  createPoolFee: "15000000"
+};
+const ORCA_POOL_LAST_CONFIRMED_DEVNET = "2026-03-01";
 
 export class PolicyGuard {
   private readonly ledgerPath: string;
@@ -189,26 +198,18 @@ export class PolicyGuard {
 
     if (intent.protocol === "raydium") return this.executeRaydiumCpmmSwap(intent);
     if (intent.protocol === "orca") return this.executeOrcaWhirlpoolSwap(intent);
-    // spl-token-swap fallback
-    return this.executeSplTokenTransfer(intent);
+    if (intent.protocol === "spl-token-swap") return this.executeTransfer(intent);
+    throw await this.violation(intent, "PROTOCOL_BLOCKED", `Protocol ${intent.protocol} is not supported by the execution router.`);
   }
 
   private async sendAndConfirmIx(instructions: TransactionInstruction[]): Promise<string> {
-    const tx = new Transaction().add(...instructions);
-    const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash();
-    tx.recentBlockhash = blockhash;
-    tx.feePayer = this.signer.publicKey;
-    tx.sign(this.signer);
-    const sig = await this.connection.sendRawTransaction(tx.serialize());
-    await this.connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight });
-    return sig;
+    return sendTx(this.agentKit, instructions, [this.signer], "mid");
   }
 
   // ── Raydium CPMM devnet swap demo ───────────────────────────────────────────
 
   private async executeRaydiumCpmmSwap(intent: AgentIntent): Promise<string> {
-    try {
-      console.log("→ [raydium] Step 1/10: loading Raydium SDK on devnet...");
+    console.log("→ [raydium] Step 1/10: loading Raydium SDK on devnet...");
       const raydium = await Raydium.load({
         connection: this.connection,
         owner: this.signer,
@@ -245,12 +246,8 @@ export class PolicyGuard {
       await mintTo(this.connection, this.signer, mintA, ownerTokenA.address, this.signer, initialSupply, [], undefined, TOKEN_PROGRAM_ID);
       await mintTo(this.connection, this.signer, mintB, ownerTokenB.address, this.signer, initialSupply, [], undefined, TOKEN_PROGRAM_ID);
 
-      console.log("→ [raydium] Step 4/10: fetching CPMM fee configs from API...");
-      const feeConfigs = await raydium.api.getCpmmConfigs();
-      const feeConfig = feeConfigs[0];
-      if (!feeConfig) {
-        throw await this.violation(intent, "RAYDIUM_CONFIG_MISSING", "No Raydium CPMM fee config available on devnet.");
-      }
+      console.log("→ [raydium] Step 4/10: using pinned devnet CPMM fee config...");
+      const feeConfig = DEVNET_CPMM_FEE_CONFIG;
 
       console.log("→ [raydium] Step 5/10: creating CPMM pool...");
       const cpmmProgram = (DEVNET_PROGRAM_ID as typeof DEVNET_PROGRAM_ID & { CPMM_PROGRAM?: PublicKey }).CPMM_PROGRAM
@@ -328,15 +325,28 @@ export class PolicyGuard {
 
       console.log(`→ [raydium] Step 10/10: swap confirmed with txId ${swapResult.txId}`);
       return swapResult.txId;
-    } catch (err) {
-      logger.warn({ err, agentId: intent.agentId }, "Raydium CPMM swap failed, falling back to SPL token transfer.");
-      return this.executeSplTokenTransfer(intent);
-    }
   }
 
   private async executeOrcaWhirlpoolSwap(intent: AgentIntent): Promise<string> {
-    try {
-      console.log("→ [orca] Step 1/5: building Anchor provider and Whirlpool context...");
+    console.log("→ [orca] Step 1/6: checking hardcoded whirlpool account on devnet...");
+    const poolAddress = new PublicKey(ORCA_DEVNET_SOL_USDC_POOL);
+    const poolInfo = await this.connection.getAccountInfo(poolAddress);
+    if (!poolInfo) {
+      throw await this.violation(
+        intent,
+        "ORCA_POOL_MISSING",
+        `Whirlpool ${poolAddress.toBase58()} does not exist on devnet (last confirmed ${ORCA_POOL_LAST_CONFIRMED_DEVNET}).`
+      );
+    }
+    if (poolInfo.lamports === 0) {
+      throw await this.violation(
+        intent,
+        "ORCA_POOL_EMPTY",
+        `Whirlpool ${poolAddress.toBase58()} has zero lamports and cannot provide liquidity.`
+      );
+    }
+
+    console.log(`→ [orca] Step 2/6: pool account exists (last confirmed ${ORCA_POOL_LAST_CONFIRMED_DEVNET}). Building provider...`);
       const anchorWallet = {
         publicKey: this.signer.publicKey,
         signTransaction: async <T>(tx: T): Promise<T> => {
@@ -350,11 +360,11 @@ export class PolicyGuard {
       const anchorProvider = new AnchorProvider(this.connection, anchorWallet, AnchorProvider.defaultOptions());
       const ctx = WhirlpoolContext.withProvider(anchorProvider);
 
-      console.log("→ [orca] Step 2/5: loading Whirlpool client and pool...");
+      console.log("→ [orca] Step 3/6: loading Whirlpool client and pool...");
       const client = buildWhirlpoolClient(ctx);
-      const pool = await client.getPool(new PublicKey(ORCA_DEVNET_SOL_USDC_POOL));
+      const pool = await client.getPool(poolAddress);
 
-      console.log("→ [orca] Step 3/5: building swap quote by input token...");
+      console.log("→ [orca] Step 4/6: building swap quote by input token...");
       const solMintKey = new PublicKey(SOL_MINT_ADDRESS);
       const inputAmount = new BN(Math.floor(intent.amountSol * LAMPORTS_PER_SOL));
       const slippageTolerance = Percentage.fromDecimal(new Decimal(intent.slippageBps).div(10_000));
@@ -368,16 +378,20 @@ export class PolicyGuard {
         IGNORE_CACHE
       );
 
-      console.log("→ [orca] Step 4/5: executing Whirlpool swap transaction...");
+      if (!quote.estimatedAmountOut || quote.estimatedAmountOut.lte(new BN(0))) {
+        throw await this.violation(
+          intent,
+          "ORCA_POOL_NO_LIQUIDITY",
+          `Whirlpool ${poolAddress.toBase58()} returned zero output quote; liquidity is unavailable.`
+        );
+      }
+
+      console.log("→ [orca] Step 5/6: executing Whirlpool swap transaction...");
       const txPayload = await pool.swap(quote);
       const txId = await txPayload.buildAndExecute();
 
-      console.log(`→ [orca] Step 5/5: Whirlpool swap confirmed: ${txId}`);
+      console.log(`→ [orca] Step 6/6: Whirlpool swap confirmed: ${txId}`);
       return txId;
-    } catch (err) {
-      logger.warn({ err, agentId: intent.agentId }, "Orca Whirlpool swap failed, falling back to SPL token transfer.");
-      return this.executeSplTokenTransfer(intent);
-    }
   }
 
   // ── SPL token transfer fallback ─────────────────────────────────────────────

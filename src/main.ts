@@ -207,6 +207,14 @@ async function attackTest(args: string[]): Promise<void> {
   const [agent] = swarm.spawnAgents(6);
   if (!agent) throw new Error("Failed to spawn agent.");
 
+  const funderWallet = loadFunderWallet(args);
+  if (!funderWallet) {
+    console.error("\nERROR: attack-test also requires a funder wallet (--funder=<path>).")
+    console.error("Example: bun run src/main.ts attack-test --funder=funder.json");
+    process.exit(1);
+  }
+  await swarm.ensureFunding(funderWallet);
+
   const malicious = {
     agentId: "attacker-1",
     type: "swap" as const,
@@ -270,7 +278,7 @@ async function main(): Promise<void> {
 Usage:
   bun run src/main.ts create-wallet
   bun run src/main.ts run-swarm   [--agents=6] [--rpc=<url>] [--airdrop-rpc=<url>] [--engine=scripted|groq|gemini|openai|openrouter|mistral|ollama|generic|coordinator] [--coordinator=model1:role1,model2:role2,...]
-  bun run src/main.ts attack-test [--rpc=<url>]
+  bun run src/main.ts attack-test [--rpc=<url>] --funder=<path>
 
 Engines:
   scripted      No API key needed (default)

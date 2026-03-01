@@ -32,11 +32,13 @@ flowchart TD
   S2 -->|Peer Addresses| A
   S3 -->|Peer Addresses| A
   subgraph "Execution Paths"
-    J[Jupiter: Quote API + Inter-agent SOL Transfer]
-    R[Raydium: SPL Token Mint + Inter-agent Token Transfer]
+    S[SPL-Token-Swap branch: Inter-agent SOL Transfer]
+    R[Raydium CPMM: Devnet Pool + Swap]
+    O[Orca Whirlpool: Pool Check + Swap]
   end
-  D --> J
+  D --> S
   D --> R
+  D --> O
 ```
 
 Each swarm agent has its own wallet and its own PolicyGuard instance. The guard holds policy configuration, a daily spend ledger, cooldown timing state, and references to execution infrastructure. If an intent is rejected at any stage, execution is stopped immediately and a reason code is emitted.
@@ -55,9 +57,9 @@ The agent decision module outputs an `AgentIntent` object. This object includes 
 
 After validation succeeds, PolicyGuard routes execution through `SolanaAgentKit`:
 
-- **Jupiter path**: fetches a real quote from the Jupiter API (proving dApp connectivity with real price data), then executes a confirmed **inter-agent SOL transfer** to a peer agent via `sendTx`.
-- **Raydium path**: verifies Raydium API reachability, then creates a new **SPL token mint** on devnet, mints tokens to the agent's associated token account, and **transfers SPL tokens to a peer agent's token account** — interacting with the Token Program.
-- **Generic fallback**: inter-agent SOL transfer via `sendTx`.
+- **SPL token swap branch**: executes an inter-agent SOL transfer via `sendTx` (explicitly routed in `execute()` for `spl-token-swap`).
+- **Raydium path**: creates a devnet CPMM pool and performs a CPMM swap using pinned devnet fee config (no mainnet API config fetch).
+- **Orca path**: checks the hardcoded devnet Whirlpool account exists, validates quote output is non-zero, and then executes the swap.
 
 All transactions use `sendTx` from Solana Agent Kit, which handles compute budget estimation and priority fees automatically.
 
@@ -74,7 +76,7 @@ The swarm executor uses a two-pass spawn: first all keypairs are generated, then
 Validation order matters and is intentionally static:
 
 1. **Rationale quality check** — rejects empty or trivial rationale when reason strings are required.
-2. **Protocol allowlist check** — only approved protocols (Jupiter/Raydium defaults).
+2. **Protocol allowlist check** — only approved protocols (`raydium`, `orca`, `spl-token-swap`).
 3. **Mint allowlist check** — restricts tradable assets to known mints.
 4. **Max transaction size check** — e.g., default `0.5 SOL` cap.
 5. **Daily cumulative exposure check** — e.g., default `5 SOL` cap.
@@ -147,47 +149,39 @@ This enables predictable tool invocation and avoids free-form prompting for sens
 3. Run swarm — funder distributes 0.3 SOL to each agent via `SystemProgram.transfer`.
 4. AI engine (Groq/scripted) generates intents.
 5. Validate intents through PolicyGuard 8-step sequence.
-6. For Jupiter: fetch real quote from Jupiter API → inter-agent SOL transfer via `sendTx`.
-7. For Raydium: verify API reachability → create SPL token mint → mint tokens → inter-agent SPL token transfer.
-8. Record outcomes to audit log client.
-9. Review event stream and rejection reasons.
+6. For `spl-token-swap`: inter-agent SOL transfer via `sendTx`.
+7. For Raydium: create devnet CPMM pool using pinned devnet fee config and execute swap.
+8. For Orca: verify hardcoded pool account exists and has non-zero output quote before swap.
+9. Record outcomes to audit log client.
+10. Review event stream and rejection reasons.
 
 ## Live devnet test results
 
-### Swarm execution (3 agents, Groq engine)
+### Swarm execution (fresh run from this submission)
 
 ```
-Engine: GroqDecisionEngine | Agents: 3 | RPC: devnet (default)
-Funding: 0.3 SOL per agent from funder wallet
+bun run src/main.ts run-swarm --agents=3 --engine=scripted --funder=funder.json
 
-[agent-3] 📋 jupiter 0.04◎
-  → Jupiter quote received (outAmount: 3440057)
-  → Inter-agent SOL transfer to peer 4uzFyqnCfhFuWLVXF5AuYWNAUoyLdoTrbKbgEiZQe2X5
-[agent-3] ✅ Signature: 2QDE5Cfq5QFDybTZAK9QSpQUH4p9GsogbtfTpgdFgPbwHiJJe9uo4ZBLXhGN4u44jNxnzoCDQXWpWVX7FSmyae7G
-
-[agent-1] 📋 raydium 0.2◎
-  → Raydium API reachable
-  → SPL token mint created: EctQJhFFs2gy7fk2A4huMjB4oYriJKeVB9szsmrbacmP
-  → 200M tokens minted to agent wallet
-  → SPL tokens transferred to peer 8iu4p68yehR1CJ59YwAdMmiBZcv1Q3PT7K7TBhBASPaE
-[agent-1] ✅ Signature: 4PSMtHqU4kAuA65EKmtUytPfLXBKin5kh27Vr7JpHTLpkbyBs4pfZeiTun65XbDuGxp8sbSpT2iEGG4Dk8o6DWMz
-
-Swarm complete — 2 executed, 1 rejected out of 3 agents.
+Funding 3 agents from funder wallet...
+ERROR: failed to get balance of account <agent-address>: Error: 403 Forbidden: Domain forbidden
 ```
 
-Verify on [Solana Explorer (devnet)](https://explorer.solana.com/?cluster=devnet):
-- [agent-3 Jupiter SOL transfer](https://explorer.solana.com/tx/2QDE5Cfq5QFDybTZAK9QSpQUH4p9GsogbtfTpgdFgPbwHiJJe9uo4ZBLXhGN4u44jNxnzoCDQXWpWVX7FSmyae7G?cluster=devnet)
-- [agent-1 SPL token mint + transfer](https://explorer.solana.com/tx/4PSMtHqU4kAuA65EKmtUytPfLXBKin5kh27Vr7JpHTLpkbyBs4pfZeiTun65XbDuGxp8sbSpT2iEGG4Dk8o6DWMz?cluster=devnet)
-- [SPL token mint](https://explorer.solana.com/address/EctQJhFFs2gy7fk2A4huMjB4oYriJKeVB9szsmrbacmP?cluster=devnet)
+The same 403 restriction occurred against multiple devnet RPC endpoints in this CI/container environment (`api.devnet.solana.com`, `solana-devnet-rpc.publicnode.com`, and `rpc.ankr.com/solana_devnet`). Because RPC calls are blocked before funding, no new transaction signatures can be produced here.
 
-### Attack simulation (malicious intent blocked)
+To generate explorer links from this exact codebase, run the same command above from a network where Solana devnet RPC is reachable. The emitted signatures in terminal output will map 1:1 to Explorer links using:
+
+`https://explorer.solana.com/tx/<SIGNATURE>?cluster=devnet`
+
+### Attack simulation (fresh run from this submission)
 
 ```
-Simulating malicious intent (amountSol=10, rationale='hack')...
-✅ Rejected as expected: Policy violation [RATIONALE_REQUIRED]: Intent rationale must be present and meaningful.
+bun run src/main.ts attack-test --funder=funder.json --rpc=https://api.devnet.solana.com
+
+Funding 6 agents from funder wallet...
+ERROR: failed to get balance of account <agent-address>: Error: 403 Forbidden: Domain forbidden
 ```
 
-The attacker's intent is rejected at PolicyGuard's first validation step before any signing or execution can occur.
+Even though this environment cannot reach devnet RPC, the command now requires `--funder` and always attempts agent funding first, which is necessary for reproducible policy-code demonstrations once RPC access is available.
 
 ## Submission-readiness checklist rationale
 

@@ -107,6 +107,15 @@ describe("PolicyGuard — 8-step validation", () => {
     ).resolves.toBeTypeOf("string");
   });
 
+  it("routes spl-token-swap intents through executeTransfer", async () => {
+    const { guard } = setupGuard();
+    const transferSpy = vi.spyOn(guard as never, "executeTransfer" as never).mockResolvedValue("transfer-sig");
+    await expect(
+      guard.validateAndExecute(buildIntent({ protocol: "spl-token-swap", type: "transfer", rationale: "transfer rationale for reachability" }))
+    ).resolves.toBe("transfer-sig");
+    expect(transferSpy).toHaveBeenCalledOnce();
+  });
+
   it("rejects forbidden mint (check 3)", async () => {
     const { guard } = setupGuard();
     await expect(

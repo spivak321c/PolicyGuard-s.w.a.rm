@@ -3,7 +3,7 @@ import { PublicKey } from "@solana/web3.js";
 import { createMemoInstruction } from "@solana/spl-memo";
 import type { PolicyAuditRecord } from "./types";
 
-const POLICY_VAULT_PROGRAM_ID = new PublicKey("11111111111111111111111111111111");
+const POLICY_VAULT_PROGRAM_ID = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
 
 export class PolicyVaultClient {
   constructor(private readonly provider: AnchorProvider) {}
