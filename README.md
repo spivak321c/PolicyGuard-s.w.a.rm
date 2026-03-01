@@ -285,3 +285,46 @@ Simulating malicious intent (amountSol=10, rationale='hack')...
 ## Deep dive
 
 For a full technical deep dive into the architecture, security model, Solana Agent Kit integration, PolicyGuard internals, and execution walkthrough, see **[DEEP_DIVE.md](./DEEP_DIVE.md)**.
+
+## Protocol Support (Devnet)
+
+| Protocol | Intent Protocol Key | Execution Path | Status |
+|---|---|---|---|
+| Raydium CPMM | `raydium` | `executeRaydiumCpmmSwap` | Enabled |
+| Orca Whirlpool | `orca` | `executeOrcaWhirlpoolSwap` | Enabled |
+| SPL Token Swap fallback | `spl-token-swap` | `executeSplTokenTransfer` | Enabled |
+
+## Inter-Model Communication
+
+You can register model engines from environment variables and run a coordinator chain that passes rationale context from one step to the next.
+
+### Environment setup
+
+Preset providers (auto-registered by `ModelRegistry.registerFromEnv()`):
+
+- `GROQ_API_KEY` + `GROQ_MODEL`
+- `GEMINI_API_KEY` + `GEMINI_MODEL`
+- `OPENAI_API_KEY` + `OPENAI_MODEL`
+- `OPENROUTER_API_KEY` + `OPENROUTER_MODEL`
+- `MISTRAL_API_KEY` + `MISTRAL_MODEL`
+- `TOGETHER_API_KEY` + `TOGETHER_MODEL`
+
+Other modes:
+
+- `OLLAMA_ENDPOINT` + `OLLAMA_MODEL` → registers as `ollama`
+- `LLM_ENDPOINT` + `LLM_MODEL` (+ optional `LLM_API_KEY`) → registers as `generic`
+- `MODEL_<n>_ENDPOINT` + `MODEL_<n>_KEY` + `MODEL_<n>_ID` → registers as `<n>`
+
+### Coordinator CLI examples
+
+```bash
+# 2-model chain
+bun run src/main.ts run-swarm \
+  --engine=coordinator \
+  --coordinator=groq:planner,openai:reviewer
+
+# 3-model chain
+bun run src/main.ts run-swarm \
+  --engine=coordinator \
+  --coordinator=groq:planner,gemini:risk,mistral:finalizer
+```

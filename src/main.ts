@@ -2,11 +2,11 @@
 import { Keypair } from "@solana/web3.js";
 import * as fs from "fs";
 import {
-  ScriptedDecisionEngine,
-  GroqDecisionEngine,
-  GenericLLMEngine
+  ScriptedDecisionEngine
 } from "./agent-logic";
 import { SwarmExecutor } from "./swarm-executor";
+import { ModelRegistry } from "./ai-engines/model-registry";
+import { CoordinatorEngine } from "./ai-engines/coordinator-engine";
 import type { IAgentDecisionEngine } from "./types";
 
 
@@ -35,22 +35,45 @@ function parseRpcArg(args: string[]): string {
 }
 
 function buildEngine(args: string[]): IAgentDecisionEngine {
+  ModelRegistry.registerFromEnv();
+
   const name = (parseFlag(args, "engine") ?? process.env.AGENT_ENGINE ?? "scripted").toLowerCase();
+  const coordinatorFlag = parseFlag(args, "coordinator");
 
-  switch (name) {
-    case "groq":
-      // Use "llama-3.1-8b-instant" as default (llama3-8b-8192 is decommissioned).
-      return new GroqDecisionEngine(process.env.GROQ_MODEL ?? "llama-3.1-8b-instant");
+  if (name === "scripted") {
+    return new ScriptedDecisionEngine();
+  }
 
-    case "generic": {
-      // Reads LLM_ENDPOINT, LLM_API_KEY, LLM_MODEL from environment.
-      return GenericLLMEngine.fromEnv();
+  if (coordinatorFlag) {
+    const steps = coordinatorFlag
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const [model, role] = entry.split(":");
+        return {
+          model: (model ?? "").trim(),
+          role: (role ?? "reviewer").trim()
+        };
+      })
+      .filter((step) => step.model.length > 0 && step.role.length > 0);
+
+    if (steps.length >= 2) {
+      return new CoordinatorEngine(steps);
     }
 
-    default:
-      return new ScriptedDecisionEngine();
+    console.warn("Coordinator requested but fewer than 2 valid steps were provided; falling back to scripted engine.");
+    return new ScriptedDecisionEngine();
+  }
+
+  try {
+    return ModelRegistry.get(name);
+  } catch (err) {
+    console.warn(`Unknown or unregistered engine '${name}', falling back to scripted.`, err);
+    return new ScriptedDecisionEngine();
   }
 }
+
 
 function loadFunderWallet(args: string[]): Keypair | undefined {
   const funderPath = parseFlag(args, "funder");
@@ -223,35 +246,44 @@ async function main(): Promise<void> {
       console.log(`
 Usage:
   bun run src/main.ts create-wallet
-  bun run src/main.ts run-swarm   [--agents=6] [--rpc=<url>] [--airdrop-rpc=<url>] [--engine=scripted|groq|generic]
+  bun run src/main.ts run-swarm   [--agents=6] [--rpc=<url>] [--airdrop-rpc=<url>] [--engine=scripted|groq|gemini|openai|openrouter|mistral|ollama|generic|coordinator] [--coordinator=model1:role1,model2:role2,...]
   bun run src/main.ts attack-test [--rpc=<url>]
 
 Engines:
-  scripted   No API key needed (default)
-  groq       Requires: GROQ_API_KEY
-             Optional: GROQ_MODEL (default: llama-3.1-8b-instant)
-  generic    Any OpenAI-compatible provider via:
-             LLM_ENDPOINT  e.g. https://api.groq.com/openai/v1/chat/completions
-             LLM_API_KEY   Bearer token (blank for local providers)
-             LLM_MODEL     e.g. llama-3.1-8b-instant, phi3, mistral
+  scripted      No API key needed (default)
+  groq          Requires: GROQ_API_KEY (+ GROQ_MODEL)
+  gemini        Requires: GEMINI_API_KEY (+ GEMINI_MODEL)
+  openai        Requires: OPENAI_API_KEY (+ OPENAI_MODEL)
+  openrouter    Requires: OPENROUTER_API_KEY (+ OPENROUTER_MODEL)
+  mistral       Requires: MISTRAL_API_KEY (+ MISTRAL_MODEL)
+  together      Requires: TOGETHER_API_KEY (+ TOGETHER_MODEL)
+  ollama        Requires: OLLAMA_ENDPOINT + OLLAMA_MODEL
+  generic       Requires: LLM_ENDPOINT + LLM_MODEL (+ optional LLM_API_KEY)
+  coordinator   Use --coordinator=model:role,model:role (2+ steps)
+
+Custom model env pattern:
+  MODEL_<n>_ENDPOINT, MODEL_<n>_KEY, MODEL_<n>_ID (registers engine name "<n>")
+
+Coordinator examples:
+  # 2-model chain
+  bun run src/main.ts run-swarm --engine=coordinator --coordinator=groq:planner,openai:reviewer
+
+  # 3-model chain
+  bun run src/main.ts run-swarm --engine=coordinator --coordinator=groq:planner,gemini:risk,mistral:finalizer
 
 Examples:
   # Use single funder wallet
-  GROQ_API_KEY=gsk_... bun run src/main.ts run-swarm --engine=groq --funder=funder.json
-
-  # Using split RPCs (Faucet on dRPC, main logic on public devnet)
-  bun run src/main.ts run-swarm --engine=groq \\
-    --airdrop-rpc=https://api.devnet.solana.com
+  GROQ_API_KEY=gsk_... GROQ_MODEL=llama-3.1-8b-instant \
+    bun run src/main.ts run-swarm --engine=groq --funder=funder.json
 
   # Ollama (local, no key)
-  LLM_ENDPOINT=http://localhost:11434/v1/chat/completions LLM_MODEL=phi3 \\
-    bun run src/main.ts run-swarm --engine=generic
+  OLLAMA_ENDPOINT=http://localhost:11434/v1/chat/completions OLLAMA_MODEL=phi3 \
+    bun run src/main.ts run-swarm --engine=ollama
 
-  # Together AI
-  LLM_ENDPOINT=https://api.together.xyz/v1/chat/completions \\
-  LLM_API_KEY=your_key LLM_MODEL=mistralai/Mistral-7B-Instruct-v0.3 \\
-    bun run src/main.ts run-swarm --engine=generic
-      `);
+  # Generic endpoint
+  LLM_ENDPOINT=https://api.together.xyz/v1/chat/completions \
+  LLM_API_KEY=your_key LLM_MODEL=mistralai/Mistral-7B-Instruct-v0.3 \
+    bun run src/main.ts run-swarm --engine=generic      `);
   }
 }
 

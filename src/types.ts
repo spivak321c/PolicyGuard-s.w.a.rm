@@ -5,7 +5,7 @@ export type IntentType = "swap" | "add-liquidity" | "remove-liquidity" | "transf
 export interface AgentIntent {
   agentId: string;
   type: IntentType;
-  protocol: "jupiter" | "raydium";
+  protocol: "raydium" | "orca" | "spl-token-swap";
   amountSol: number;
   inputMint?: string;
   outputMint?: string;
@@ -19,7 +19,7 @@ export interface PolicyConfig {
   maxSolPerTransaction: number;
   maxSolDaily: number;
   maxSlippageBps: number;
-  allowedProtocols: Array<"jupiter" | "raydium">;
+  allowedProtocols: Array<"raydium" | "orca" | "spl-token-swap">;
   allowedMints: string[];
   blockedAddresses: string[];
   cooldownSeconds: number;
