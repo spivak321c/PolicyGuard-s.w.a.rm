@@ -26,8 +26,20 @@ function parseFlag(args: string[], flag: string): string | undefined {
 }
 
 function parseAgentsArg(args: string[]): number {
-  const v = Number(parseFlag(args, "agents") ?? "6");
-  return Number.isFinite(v) && v >= 1 ? v : 6;
+  const raw = parseFlag(args, "agents");
+  if (raw === undefined) return 6;
+
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    throw new Error("Invalid --agents value: expected a positive integer (example: --agents=3).");
+  }
+
+  const v = Number(trimmed);
+  if (!Number.isInteger(v) || v < 1) {
+    throw new Error(`Invalid --agents value '${raw}': expected a positive integer.`);
+  }
+
+  return v;
 }
 
 function parseRpcArg(args: string[]): string {
@@ -298,4 +310,8 @@ Examples:
   }
 }
 
-await main();
+await main().catch((err) => {
+  const msg = err instanceof Error ? err.message : String(err);
+  console.error(`\nERROR: ${msg}`);
+  process.exit(1);
+});
