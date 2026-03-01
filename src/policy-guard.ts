@@ -23,7 +23,7 @@ import { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken, ORCA_WHI
 import { Percentage } from "@orca-so/common-sdk";
 import Decimal from "decimal.js";
 import { AnchorProvider } from "@coral-xyz/anchor";
-import BN from "bn.js";
+import { BN } from "@coral-xyz/anchor";
 import type { AgentIntent, PolicyConfig, PolicyAuditRecord } from "./types";
 import { PolicyViolationError } from "./types";
 import { PolicyVaultClient } from "./policy-vault";
@@ -31,8 +31,8 @@ import { PolicyVaultClient } from "./policy-vault";
 const logger = pino({ name: "policy-guard", level: process.env.SWARM_TECHNICAL_LOGS === "1" ? "info" : "silent" });
 
 const ORCA_DEVNET_SOL_USDC_POOL = "3KBZiL2g8C7tiJ32hTv5v3KM7aK9htpqTw4cTXz1HvPt";
-const ORCA_DEVNET_USDC_MINT     = "BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k";
-const SOL_MINT_ADDRESS          = "So11111111111111111111111111111111111111112";
+const ORCA_DEVNET_USDC_MINT = "BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k";
+const SOL_MINT_ADDRESS = "So11111111111111111111111111111111111111112";
 
 export class PolicyGuard {
   private readonly ledgerPath: string;
@@ -50,7 +50,7 @@ export class PolicyGuard {
     // Create a SolanaAgentKit instance using KeypairWallet for this agent.
     const wallet = new KeypairWallet(signer, connection.rpcEndpoint);
     this.agentKit = new SolanaAgentKit(wallet, connection.rpcEndpoint, {});
-    this.ledgerPath = `./ledger-${signer.publicKey.toBase58().slice(0,8)}.json`;
+    this.ledgerPath = `./ledger-${signer.publicKey.toBase58().slice(0, 8)}.json`;
     this.peerAddresses = peerAddresses.filter(
       (addr) => addr !== signer.publicKey.toBase58()
     );
@@ -245,7 +245,7 @@ export class PolicyGuard {
     await mintTo(this.connection, this.signer, mintB, ownerTokenB.address, this.signer, initialSupply, [], undefined, TOKEN_PROGRAM_ID);
 
     console.log("→ [raydium] Step 4/10: fetching CPMM fee configs from API...");
-    const feeConfigs = await raydium.api.fetchCpmmConfigs();
+    const feeConfigs = await raydium.api.getCpmmConfigs();
     const feeConfig = feeConfigs[0];
     if (!feeConfig) {
       throw await this.violation(intent, "RAYDIUM_CONFIG_MISSING", "No Raydium CPMM fee config available on devnet.");
@@ -292,15 +292,18 @@ export class PolicyGuard {
       throw await this.violation(intent, "RAYDIUM_POOL_NOT_FOUND", `Pool ${poolId} not found via RPC after creation.`);
     }
 
-    console.log("→ [raydium] Step 8/10: quoting with CurveCalculator.swap...");
-    const curveSwap = CurveCalculator as unknown as {
-      swap: (inputAmount: BN, baseReserve: BN, quoteReserve: BN, tradeFeeRate: BN) => { inputAmount: BN; outputAmount: BN };
-    };
-    const quote = curveSwap.swap(
+    console.log("→ [raydium] Step 8/10: quoting with CurveCalculator.swapBaseInput...");
+    const cfg = rpcPool.configInfo;
+    const BN_ZERO = new BN(0);
+    const quote = CurveCalculator.swapBaseInput(
       new BN(Math.floor(intent.amountSol * 1_000_000_000)),
-      rpcPool.baseReserve,
-      rpcPool.quoteReserve,
-      rpcPool.configInfo?.tradeFeeRate ?? new BN(0)
+      rpcPool.vaultAAmount,
+      rpcPool.vaultBAmount,
+      cfg?.tradeFeeRate ?? BN_ZERO,
+      cfg?.creatorFeeRate ?? BN_ZERO,
+      cfg?.protocolFeeRate ?? BN_ZERO,
+      cfg?.fundFeeRate ?? BN_ZERO,
+      false
     );
 
     console.log("→ [raydium] Step 9/10: executing CPMM swap transaction...");
@@ -313,7 +316,11 @@ export class PolicyGuard {
         outputAmount: quote.outputAmount
       },
       baseIn: true,
-      slippage: intent.slippageBps / 10_000,
+      // Use a generous execution slippage (50%) for devnet demo pools.
+      // Fresh pools only have 1e9/1e9 liquidity; any meaningful swap has
+      // large price impact. Policy-level slippage (intent.slippageBps) was
+      // already enforced in validateAndExecute() step 6.
+      slippage: 0.5,
       txVersion: TxVersion.V0
     });
     const swapResult = await swapTx.execute({ sendAndConfirm: true });
@@ -336,7 +343,7 @@ export class PolicyGuard {
         signAllTransactions: async <T>(txs: T[]): Promise<T[]> => Promise.all(txs.map((tx) => anchorWallet.signTransaction(tx)))
       };
       const anchorProvider = new AnchorProvider(this.connection, anchorWallet, AnchorProvider.defaultOptions());
-      const ctx = WhirlpoolContext.withProvider(anchorProvider, ORCA_WHIRLPOOL_PROGRAM_ID);
+      const ctx = WhirlpoolContext.withProvider(anchorProvider);
 
       console.log("→ [orca] Step 2/5: loading Whirlpool client and pool...");
       const client = buildWhirlpoolClient(ctx);

@@ -150,7 +150,11 @@ export class SwarmExecutor {
             this.emitEvent("coordination.note", agent.id, {
               stage: "halt",
               message: "Execution halted due to rejection.",
-              reason: error instanceof Error ? error.message : String(error)
+              reason: error instanceof Error
+              ? error.message
+              : (typeof error === "object" && error !== null
+                  ? JSON.stringify(error)
+                  : String(error))
             });
             agent.status = "paused";
             throw error;
@@ -166,85 +170,59 @@ export class SwarmExecutor {
   }
 
   /**
-   * Distributes SOL to agents.
-   * If funderWallet is provided, it transfers SOL from that master wallet.
-   * Otherwise fallbacks to airdrops (which are easily rate limited on devnet).
+   * Distributes SOL to agents from the mandatory funder wallet.
+   * Sequential transfers prevent nonce conflicts on devnet.
    */
-  async ensureFunding(funderWallet?: Keypair, airdropRpcUrl?: string): Promise<void> {
-    const isDevnet = this.connection.rpcEndpoint.includes("devnet") || (airdropRpcUrl && airdropRpcUrl.includes("devnet"));
+  async ensureFunding(funderWallet: Keypair): Promise<void> {
+    const isDevnet = this.connection.rpcEndpoint.toLowerCase().includes("devnet");
     if (!isDevnet) return;
 
-    if (funderWallet) {
-      console.log(`Checking balance and ensuring devnet funding from funder wallet for ${this.agents.length} agents...`);
-      for (const agent of this.agents) {
-        const pubkey = new PublicKey(agent.walletAddress);
-        const balance = await this.connection.getBalance(pubkey);
-        const balanceSol = balance / 10 ** 9;
+    console.log(`Funding ${this.agents.length} agents from funder wallet...`);
 
-        console.log(`  [${agent.id}] Balance: ${balanceSol.toFixed(3)}◎`);
+    for (const agent of this.agents) {
+      const pubkey = new PublicKey(agent.walletAddress);
+      const balance = await this.connection.getBalance(pubkey);
+      const balanceSol = balance / 1e9;
+      console.log(`  [${agent.id}] Balance: ${balanceSol.toFixed(3)}◎`);
 
-        if (balance < 0.5 * 10 ** 9) {
-          try {
-            console.log(`  [${agent.id}] Transferring 0.3 SOL from funder...`);
-            const tx = new Transaction().add(
-              SystemProgram.transfer({
-                fromPubkey: funderWallet.publicKey,
-                toPubkey: pubkey,
-                lamports: 0.3 * 10 ** 9,
-              })
-            );
-            const latestBlockhash = await this.connection.getLatestBlockhash();
-            tx.recentBlockhash = latestBlockhash.blockhash;
-            tx.feePayer = funderWallet.publicKey;
-            tx.sign(funderWallet);
-
-            const sig = await this.connection.sendRawTransaction(tx.serialize());
-            await this.connection.confirmTransaction({
-              signature: sig,
-              blockhash: latestBlockhash.blockhash,
-              lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
-            });
-            console.log(`  [${agent.id}] Funded ✅ Current: ${(await this.connection.getBalance(pubkey) / 10 ** 9).toFixed(3)}◎`);
-          } catch (err) {
-            console.warn(`  [${agent.id}] Funding failed:`, err instanceof Error ? err.message : String(err));
-          }
+      if (balance < 0.8 * 1e9) {
+        try {
+          console.log(`  [${agent.id}] Transferring 0.6 SOL from funder...`);
+          const tx = new Transaction().add(
+            SystemProgram.transfer({
+              fromPubkey: funderWallet.publicKey,
+              toPubkey: pubkey,
+              lamports: 0.6 * 1e9
+            })
+          );
+          const { blockhash, lastValidBlockHeight } =
+            await this.connection.getLatestBlockhash();
+          tx.recentBlockhash = blockhash;
+          tx.feePayer = funderWallet.publicKey;
+          tx.sign(funderWallet);
+          const sig = await this.connection.sendRawTransaction(
+            tx.serialize()
+          );
+          await this.connection.confirmTransaction({
+            signature: sig,
+            blockhash,
+            lastValidBlockHeight
+          });
+          const newBalance = await this.connection.getBalance(pubkey);
+          console.log(
+            `  [${agent.id}] Funded ✅ ` +
+            `Current: ${(newBalance / 1e9).toFixed(3)}◎`
+          );
+        } catch (err) {
+          throw new Error(
+            `Failed to fund ${agent.id} from funder wallet: ` +
+            `${err instanceof Error ? err.message : String(err)}`
+          );
         }
+      } else {
+        console.log(`  [${agent.id}] Sufficient balance — skipping.`);
       }
-      return;
     }
-
-    const faucetConn = airdropRpcUrl ? new Connection(airdropRpcUrl, "confirmed") : this.connection;
-
-    console.log(`Checking balance and ensuring devnet airdrops for ${this.agents.length} agents...`);
-    if (airdropRpcUrl) {
-      console.log(`  (Using faucet RPC: ${airdropRpcUrl})`);
-    }
-
-    await Promise.allSettled(
-      this.agents.map(async (agent) => {
-        const pubkey = new PublicKey(agent.walletAddress);
-        const balance = await this.connection.getBalance(pubkey);
-        const balanceSol = balance / 10 ** 9;
-
-        console.log(`  [${agent.id}] Balance: ${balanceSol.toFixed(3)}◎`);
-
-        if (balance < 0.5 * 10 ** 9) {
-          try {
-            console.log(`  [${agent.id}] Requesting airdrop (2 SOL)...`);
-            const sig = await faucetConn.requestAirdrop(pubkey, 2 * 10 ** 9);
-            const latestBlockhash = await this.connection.getLatestBlockhash();
-            await this.connection.confirmTransaction({
-              signature: sig,
-              blockhash: latestBlockhash.blockhash,
-              lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
-            });
-            console.log(`  [${agent.id}] Airdropped ✅ Current: ${(await this.connection.getBalance(pubkey) / 10 ** 9).toFixed(3)}◎`);
-          } catch (err) {
-            console.warn(`  [${agent.id}] Airdrop failed:`, err instanceof Error ? err.message : String(err));
-          }
-        }
-      })
-    );
   }
 
   private describeIntent(intent: AgentIntent): string {

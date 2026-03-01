@@ -80,18 +80,18 @@ skills:
 ```yaml
 skills:
   - name: build_intent_scripted
-    description: Generate a deterministic swap/LP intent without any API key. Used as default and fallback engine.
+    description: Generate a deterministic swap/transfer intent without any API key. Used as default and fallback engine.
     code_path: src/agent-logic.ts → ScriptedDecisionEngine.buildIntent()
     input:
       agentId: "agent-1"
       marketBias: "bullish | bearish | neutral"
-      protocolPreference: "jupiter | raydium"
+      protocolPreference: "raydium | orca | spl-token-swap"
     output:
-      type: "swap | add-liquidity"
-      protocol: "jupiter | raydium"
+      type: "swap | transfer"
+      protocol: "raydium | orca | spl-token-swap"
       amountSol: 0.4
       slippageBps: 80
-      rationale: "Scripted strategy selected jupiter for bullish conditions."
+      rationale: "Scripted strategy selected raydium for bullish conditions."
       inputMint: "So11111111111111111111111111111111111111112"
       outputMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
@@ -102,7 +102,7 @@ skills:
     input:
       agentId: "agent-1"
       marketBias: "neutral"
-      protocolPreference: "jupiter"
+      protocolPreference: "raydium"
     output: "Same AgentIntent schema as scripted"
     example_command: "GROQ_API_KEY=gsk_... bun run src/main.ts run-swarm --engine=groq"
 
@@ -126,7 +126,7 @@ skills:
     input:
       agentId: "agent-1"
       type: "swap"
-      protocol: "jupiter"
+      protocol: "raydium"
       amountSol: 0.1
       inputMint: "So11111111111111111111111111111111111111112"
       outputMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
@@ -145,7 +145,7 @@ skills:
     rejection_code: RATIONALE_REQUIRED
 
   - name: policy_check_2_protocol_allowlist
-    description: Only approved protocols pass (default jupiter, raydium).
+    description: Only approved protocols pass — raydium, orca, spl-token-swap.
     rejection_code: PROTOCOL_BLOCKED
 
   - name: policy_check_3_mint_allowlist
@@ -177,46 +177,48 @@ skills:
 
 ```yaml
 skills:
-  - name: execute_jupiter_swap
+  - name: execute_raydium_demo
     description: |
-      Multi-step Jupiter interaction:
-      1. Fetch real-time SOL/USD price from Jupiter Price API v3 (api.jup.ag/price/v3)
-      2. Fetch token metadata from Jupiter Tokens API v2 (api.jup.ag/tokens/v2/search)
-      3. Fetch a real swap quote from Jupiter Quote API (lite-api.jup.ag/swap/v1/quote) — logs outAmount, priceImpactPct, and route plan hops
-      4. Execute a confirmed inter-agent SOL transfer to a peer agent via sendTx from SolanaAgentKit
-      Jupiter's swap API returns mainnet ALT transactions that can't land on devnet, so the quote proves dApp connectivity while the SOL transfer proves autonomous signing.
-    code_path: src/policy-guard.ts → PolicyGuard.executeJupiterSwap()
-    uses: SolanaAgentKit.sendTx()
-    jupiter_apis_called:
-      - "Price API v3: GET api.jup.ag/price/v3?ids={mints} — real-time USD prices"
-      - "Tokens API v2: GET api.jup.ag/tokens/v2/search?query={mint} — token metadata, verification status"
-      - "Quote API: GET lite-api.jup.ag/swap/v1/quote — swap routing, outAmount, priceImpact"
+      Multi-step Raydium CPMM interaction on devnet:
+      1. Load Raydium SDK on devnet
+      2. Create mintA + mintB (new SPL token mints)
+      3. Create associated token accounts for both mints and mint initial supply
+      4. Fetch CPMM fee configs via raydium.api.getCpmmConfigs()
+      5. Create a CPMM pool with the two mints
+      6. Wait for devnet RPC indexing (1.5s)
+      7. Fetch pool info from RPC via getRpcPoolInfos()
+      8. Quote the swap using CurveCalculator.swap()
+      9. Execute the CPMM swap transaction
+      10. Return the confirmed swap transaction ID
+      Proves: Raydium SDK integration, SPL token creation, CPMM pool interaction, and on-chain swap execution.
+    code_path: src/policy-guard.ts → PolicyGuard.executeRaydiumCpmmSwap()
+    uses: "@raydium-io/raydium-sdk-v2 (Raydium.load, cpmm.createPool, cpmm.swap, CurveCalculator)"
     on_chain_actions:
-      - sol_transfer: "Inter-agent SOL transfer to peer wallet"
+      - mint_creation: "Two new SPL token mints on devnet"
+      - pool_creation: "CPMM pool created from the two mints"
+      - swap_execution: "CPMM swap confirmed on devnet"
+    output:
+      signature: "Devnet swap transaction ID"
+
+  - name: execute_sol_transfer
+    description: Generic inter-agent SOL transfer via SystemProgram.transfer. Round-robin peer selection ensures transfers go to different agents.
+    code_path: src/policy-guard.ts → PolicyGuard.executeTransfer()
+    on_chain_actions:
+      - sol_transfer: "SystemProgram.transfer to peer agent"
     output:
       signature: "Devnet transaction signature"
-      quote_outAmount: "Jupiter quoted output amount"
-      priceImpactPct: "Price impact percentage"
-      routePlan: "Number of routing hops"
-      solPrice: "Real-time SOL/USD price"
-      peer: "Recipient peer agent Base58 address"
+      to: "Peer agent Base58 address"
 
-  - name: execute_raydium_spl_operation
+  - name: execute_spl_token_transfer
     description: |
-      Multi-step Raydium + Token Program interaction:
-      1. Verify Raydium Data API reachability (api-v3.raydium.io/main/info)
-      2. Fetch real pool data from Raydium Pools API (api-v3.raydium.io/pools/info/list) — logs pool count and top pool by liquidity
-      3. Create a new SPL token mint on devnet via @solana/spl-token createMint()
-      4. Create associated token account for this agent
-      5. Mint tokens to agent's ATA via mintTo()
-      6. Create associated token account for a peer agent
-      7. Transfer SPL tokens to peer agent via transfer()
-      This proves: protocol API interaction, SPL token creation, holding, and transfer.
-    code_path: src/policy-guard.ts → PolicyGuard.executeRaydiumDemo()
+      Fallback execution for spl-token-swap protocol:
+      1. Create a new SPL token mint on devnet
+      2. Create associated token account for the agent and mint tokens
+      3. Create associated token account for a peer agent
+      4. Transfer SPL tokens to peer agent
+      Returns the confirmed transfer signature.
+    code_path: src/policy-guard.ts → PolicyGuard.executeSplTokenTransfer()
     uses: "@solana/spl-token (createMint, getOrCreateAssociatedTokenAccount, mintTo, transfer)"
-    raydium_apis_called:
-      - "Data API: GET api-v3.raydium.io/main/info — protocol health check"
-      - "Pools API: GET api-v3.raydium.io/pools/info/list — pool count, top pools by liquidity"
     on_chain_actions:
       - mint_creation: "New SPL token mint on devnet"
       - token_minting: "Mint tokens to agent's ATA"
@@ -224,19 +226,8 @@ skills:
     output:
       signature: "SPL transfer transaction signature"
       mint: "New SPL token mint address"
-      poolCount: "Total Raydium pools (from API)"
       from: "Agent wallet address"
       to: "Peer agent wallet address"
-
-  - name: execute_sol_transfer
-    description: Generic inter-agent SOL transfer via SolanaAgentKit sendTx. Round-robin peer selection ensures transfers go to different agents.
-    code_path: src/policy-guard.ts → PolicyGuard.executeTransfer()
-    uses: SolanaAgentKit.sendTx()
-    on_chain_actions:
-      - sol_transfer: "SystemProgram.transfer to peer agent"
-    output:
-      signature: "Devnet transaction signature"
-      to: "Peer agent Base58 address"
 ```
 
 ## Audit & Logging Skills
@@ -249,7 +240,7 @@ skills:
     input:
       agentId: "agent-1"
       intentType: "swap"
-      protocol: "jupiter"
+      protocol: "raydium"
       approved: true
       reason: "Approved and executed"
       amountSol: 0.1
@@ -306,7 +297,7 @@ skills:
       maxSolPerTransaction: 0.5
       maxSolDaily: 5
       maxSlippageBps: 100
-      allowedProtocols: ["jupiter", "raydium"]
+      allowedProtocols: ["raydium", "orca", "spl-token-swap"]
       allowedMints: ["So11111111111111111111111111111111111111112", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"]
       blockedAddresses: []
       cooldownSeconds: 10
@@ -343,7 +334,7 @@ If you are an AI agent reading this file:
 interface AgentIntent {
   agentId: string;
   type: "swap" | "add-liquidity" | "remove-liquidity" | "transfer";
-  protocol: "jupiter" | "raydium";
+  protocol: "raydium" | "orca" | "spl-token-swap";
   amountSol: number;
   inputMint?: string;
   outputMint?: string;
@@ -358,7 +349,7 @@ interface IAgentDecisionEngine {
   buildIntent(input: {
     agentId: string;
     marketBias: "bullish" | "bearish" | "neutral";
-    protocolPreference: "jupiter" | "raydium";
+    protocolPreference: "raydium" | "orca" | "spl-token-swap";
   }): Promise<AgentIntent>;
 }
 ```

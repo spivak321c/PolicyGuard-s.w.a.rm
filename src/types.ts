@@ -79,6 +79,6 @@ export interface IAgentDecisionEngine {
   buildIntent(input: {
     agentId: string;
     marketBias: "bullish" | "bearish" | "neutral";
-    protocolPreference: "jupiter" | "raydium";
+    protocolPreference: "raydium" | "orca" | "spl-token-swap";
   }): Promise<AgentIntent>;
 }

@@ -159,18 +159,29 @@ async function runSwarm(args: string[]): Promise<void> {
   swarm.events.on("intent.rejected", (e) => {
     const err = e.payload.error;
     const phase = e.payload.phase === "generation" ? "intent generation" : "policy checks";
-    console.log(`[${e.agentId}] ❌ Rejected during ${phase}: ${err instanceof Error ? err.message : String(err)}`);
+    const msg = err instanceof Error
+      ? err.message
+      : (typeof err === "object" && err !== null ? JSON.stringify(err) : String(err));
+    console.log(`[${e.agentId}] ❌ Rejected during ${phase}: ${msg}`);
   });
 
-  // Automatically ensure airdrops on devnet if not explicitly disabled.
-  if (!parseFlag(args, "no-airdrop")) {
-    const funderWallet = loadFunderWallet(args);
-    const airdropRpc = parseFlag(args, "airdrop-rpc");
-    await swarm.ensureFunding(funderWallet, airdropRpc);
-
-    console.log("Waiting 3s for devnet RPC nodes to sync balances...");
-    await new Promise((r) => setTimeout(r, 3000));
+  const funderWallet = loadFunderWallet(args);
+  if (!funderWallet) {
+    console.error(
+      "\nERROR: A funder wallet is required to fund agents on devnet."
+    );
+    console.error(
+      "Create one with: bun run src/main.ts run-swarm --funder=funder.json"
+    );
+    console.error(
+      "Then fund it: solana airdrop 5 <ADDRESS> --url devnet"
+    );
+    process.exit(1);
   }
+  await swarm.ensureFunding(funderWallet);
+
+  console.log("Waiting 3s for devnet RPC nodes to sync balances...");
+  await new Promise((r) => setTimeout(r, 3000));
 
   const results = await swarm.runCoordinatedYieldStrategy();
   const ok = results.filter((r) => r.status === "fulfilled").length;
@@ -187,7 +198,7 @@ async function attackTest(args: string[]): Promise<void> {
   const malicious = {
     agentId: "attacker-1",
     type: "swap" as const,
-    protocol: "jupiter" as const,
+    protocol: "raydium" as const,
     amountSol: 10,
     inputMint: "So11111111111111111111111111111111111111112",
     outputMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
