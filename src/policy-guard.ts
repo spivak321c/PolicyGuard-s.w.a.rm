@@ -196,6 +196,11 @@ export class PolicyGuard {
   private async execute(intent: AgentIntent): Promise<string> {
     logger.info({ protocol: intent.protocol, agentId: intent.agentId }, "Executing approved intent.");
 
+    // Transfer intents are always handled as direct inter-agent SOL transfers.
+    // Some LLM/coordinator outputs may pair `type: transfer` with non-transfer protocols
+    // (e.g. "orca transfer"); this keeps execution deterministic and demonstrable.
+    if (intent.type === "transfer") return this.executeTransfer(intent);
+
     if (intent.protocol === "raydium") return this.executeRaydiumCpmmSwap(intent);
     if (intent.protocol === "orca") return this.executeOrcaWhirlpoolSwap(intent);
     if (intent.protocol === "spl-token-swap") return this.executeTransfer(intent);

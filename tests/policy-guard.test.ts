@@ -116,6 +116,15 @@ describe("PolicyGuard — 8-step validation", () => {
     expect(transferSpy).toHaveBeenCalledOnce();
   });
 
+  it("routes transfer intent through executeTransfer even when protocol is orca", async () => {
+    const { guard } = setupGuard();
+    const transferSpy = vi.spyOn(guard as never, "executeTransfer" as never).mockResolvedValue("transfer-sig");
+    await expect(
+      guard.validateAndExecute(buildIntent({ type: "transfer", protocol: "orca", rationale: "orca transfer needs deterministic transfer routing" }))
+    ).resolves.toBe("transfer-sig");
+    expect(transferSpy).toHaveBeenCalledOnce();
+  });
+
   it("rejects forbidden mint (check 3)", async () => {
     const { guard } = setupGuard();
     await expect(

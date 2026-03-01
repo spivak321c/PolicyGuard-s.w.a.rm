@@ -278,8 +278,9 @@ export class SwarmExecutor {
         return { agentId: agent.id, status: "fulfilled", signature: sig };
       } catch (err) {
         const message = formatErrorMessage(err);
-        // Ensure intent.rejected event fires even if buildIntent fails
-        if (agent.status !== "executing") {
+        // Emit generation-phase rejection only when buildIntent/planning failed.
+        // If processIntent already emitted policy rejection, avoid duplicate events.
+        if (agent.status === "planning") {
           this.emitEvent("intent.rejected", agent.id, { error: message, phase: "generation" });
           this.emitEvent("coordination.note", agent.id, {
             stage: "halt",
