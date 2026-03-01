@@ -18,6 +18,18 @@ import pino from "pino";
 
 const logger = pino({ name: "swarm-executor", level: process.env.SWARM_TECHNICAL_LOGS === "1" ? "info" : "silent" });
 
+function formatErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "object" && err !== null) {
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return "[unserializable error object]";
+    }
+  }
+  return String(err);
+}
+
 interface AnchorWalletLike {
   publicKey: Keypair["publicKey"];
   signTransaction<T extends Transaction | VersionedTransaction>(tx: T): Promise<T>;
@@ -150,11 +162,7 @@ export class SwarmExecutor {
             this.emitEvent("coordination.note", agent.id, {
               stage: "halt",
               message: "Execution halted due to rejection.",
-              reason: error instanceof Error
-              ? error.message
-              : (typeof error === "object" && error !== null
-                  ? JSON.stringify(error)
-                  : String(error))
+              reason: formatErrorMessage(error)
             });
             agent.status = "paused";
             throw error;
@@ -269,7 +277,7 @@ export class SwarmExecutor {
         const sig = await agent.processIntent(intent);
         return { agentId: agent.id, status: "fulfilled", signature: sig };
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = formatErrorMessage(err);
         // Ensure intent.rejected event fires even if buildIntent fails
         if (agent.status !== "executing") {
           this.emitEvent("intent.rejected", agent.id, { error: message, phase: "generation" });

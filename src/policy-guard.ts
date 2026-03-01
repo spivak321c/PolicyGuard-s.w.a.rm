@@ -207,54 +207,55 @@ export class PolicyGuard {
   // ── Raydium CPMM devnet swap demo ───────────────────────────────────────────
 
   private async executeRaydiumCpmmSwap(intent: AgentIntent): Promise<string> {
-    console.log("→ [raydium] Step 1/10: loading Raydium SDK on devnet...");
-    const raydium = await Raydium.load({
-      connection: this.connection,
-      owner: this.signer,
-      cluster: "devnet",
-      disableLoadToken: true
-    });
+    try {
+      console.log("→ [raydium] Step 1/10: loading Raydium SDK on devnet...");
+      const raydium = await Raydium.load({
+        connection: this.connection,
+        owner: this.signer,
+        cluster: "devnet",
+        disableLoadToken: true
+      });
 
-    console.log("→ [raydium] Step 2/10: creating mintA + mintB...");
-    const mintA = await createMint(this.connection, this.signer, this.signer.publicKey, null, 9);
-    const mintB = await createMint(this.connection, this.signer, this.signer.publicKey, null, 9);
+      console.log("→ [raydium] Step 2/10: creating mintA + mintB...");
+      const mintA = await createMint(this.connection, this.signer, this.signer.publicKey, null, 9);
+      const mintB = await createMint(this.connection, this.signer, this.signer.publicKey, null, 9);
 
-    console.log("→ [raydium] Step 3/10: creating ATAs and minting supply...");
-    const ownerTokenA = await getOrCreateAssociatedTokenAccount(
-      this.connection,
-      this.signer,
-      mintA,
-      this.signer.publicKey,
-      false,
-      undefined,
-      undefined,
-      TOKEN_PROGRAM_ID
-    );
-    const ownerTokenB = await getOrCreateAssociatedTokenAccount(
-      this.connection,
-      this.signer,
-      mintB,
-      this.signer.publicKey,
-      false,
-      undefined,
-      undefined,
-      TOKEN_PROGRAM_ID
-    );
-    const initialSupply = 1_000_000_000;
-    await mintTo(this.connection, this.signer, mintA, ownerTokenA.address, this.signer, initialSupply, [], undefined, TOKEN_PROGRAM_ID);
-    await mintTo(this.connection, this.signer, mintB, ownerTokenB.address, this.signer, initialSupply, [], undefined, TOKEN_PROGRAM_ID);
+      console.log("→ [raydium] Step 3/10: creating ATAs and minting supply...");
+      const ownerTokenA = await getOrCreateAssociatedTokenAccount(
+        this.connection,
+        this.signer,
+        mintA,
+        this.signer.publicKey,
+        false,
+        undefined,
+        undefined,
+        TOKEN_PROGRAM_ID
+      );
+      const ownerTokenB = await getOrCreateAssociatedTokenAccount(
+        this.connection,
+        this.signer,
+        mintB,
+        this.signer.publicKey,
+        false,
+        undefined,
+        undefined,
+        TOKEN_PROGRAM_ID
+      );
+      const initialSupply = 1_000_000_000;
+      await mintTo(this.connection, this.signer, mintA, ownerTokenA.address, this.signer, initialSupply, [], undefined, TOKEN_PROGRAM_ID);
+      await mintTo(this.connection, this.signer, mintB, ownerTokenB.address, this.signer, initialSupply, [], undefined, TOKEN_PROGRAM_ID);
 
-    console.log("→ [raydium] Step 4/10: fetching CPMM fee configs from API...");
-    const feeConfigs = await raydium.api.getCpmmConfigs();
-    const feeConfig = feeConfigs[0];
-    if (!feeConfig) {
-      throw await this.violation(intent, "RAYDIUM_CONFIG_MISSING", "No Raydium CPMM fee config available on devnet.");
-    }
+      console.log("→ [raydium] Step 4/10: fetching CPMM fee configs from API...");
+      const feeConfigs = await raydium.api.getCpmmConfigs();
+      const feeConfig = feeConfigs[0];
+      if (!feeConfig) {
+        throw await this.violation(intent, "RAYDIUM_CONFIG_MISSING", "No Raydium CPMM fee config available on devnet.");
+      }
 
-    console.log("→ [raydium] Step 5/10: creating CPMM pool...");
-    const cpmmProgram = (DEVNET_PROGRAM_ID as typeof DEVNET_PROGRAM_ID & { CPMM_PROGRAM?: PublicKey }).CPMM_PROGRAM
-      ?? DEVNET_PROGRAM_ID.CREATE_CPMM_POOL_PROGRAM;
-    const poolCreateTx = await raydium.cpmm.createPool({
+      console.log("→ [raydium] Step 5/10: creating CPMM pool...");
+      const cpmmProgram = (DEVNET_PROGRAM_ID as typeof DEVNET_PROGRAM_ID & { CPMM_PROGRAM?: PublicKey }).CPMM_PROGRAM
+        ?? DEVNET_PROGRAM_ID.CREATE_CPMM_POOL_PROGRAM;
+      const poolCreateTx = await raydium.cpmm.createPool({
       programId: cpmmProgram,
       poolFeeAccount: DEVNET_PROGRAM_ID.CREATE_CPMM_POOL_FEE_ACC,
       mintA: {
@@ -278,37 +279,37 @@ export class PolicyGuard {
       },
       txVersion: TxVersion.V0
     });
-    const createPoolResult = await poolCreateTx.execute({ sendAndConfirm: true });
-    const poolId = poolCreateTx.extInfo.address.poolId.toBase58();
-    console.log(`→ [raydium] CPMM pool created: ${poolId} (tx: ${createPoolResult.txId})`);
+      const createPoolResult = await poolCreateTx.execute({ sendAndConfirm: true });
+      const poolId = poolCreateTx.extInfo.address.poolId.toBase58();
+      console.log(`→ [raydium] CPMM pool created: ${poolId} (tx: ${createPoolResult.txId})`);
 
-    console.log("→ [raydium] Step 6/10: waiting 1.5s for devnet RPC indexing...");
-    await new Promise((r) => setTimeout(r, 1500));
+      console.log("→ [raydium] Step 6/10: waiting 1.5s for devnet RPC indexing...");
+      await new Promise((r) => setTimeout(r, 1500));
 
-    console.log("→ [raydium] Step 7/10: fetching pool info from RPC...");
-    const rpcPools = await raydium.cpmm.getRpcPoolInfos([poolId]);
-    const rpcPool = rpcPools[poolId];
-    if (!rpcPool) {
-      throw await this.violation(intent, "RAYDIUM_POOL_NOT_FOUND", `Pool ${poolId} not found via RPC after creation.`);
-    }
+      console.log("→ [raydium] Step 7/10: fetching pool info from RPC...");
+      const rpcPools = await raydium.cpmm.getRpcPoolInfos([poolId]);
+      const rpcPool = rpcPools[poolId];
+      if (!rpcPool) {
+        throw await this.violation(intent, "RAYDIUM_POOL_NOT_FOUND", `Pool ${poolId} not found via RPC after creation.`);
+      }
 
-    console.log("→ [raydium] Step 8/10: quoting with CurveCalculator.swapBaseInput...");
-    const cfg = rpcPool.configInfo;
-    const BN_ZERO = new BN(0);
-    const quote = CurveCalculator.swapBaseInput(
-      new BN(Math.floor(intent.amountSol * 1_000_000_000)),
-      rpcPool.vaultAAmount,
-      rpcPool.vaultBAmount,
-      cfg?.tradeFeeRate ?? BN_ZERO,
-      cfg?.creatorFeeRate ?? BN_ZERO,
-      cfg?.protocolFeeRate ?? BN_ZERO,
-      cfg?.fundFeeRate ?? BN_ZERO,
-      false
-    );
+      console.log("→ [raydium] Step 8/10: quoting with CurveCalculator.swapBaseInput...");
+      const cfg = rpcPool.configInfo;
+      const BN_ZERO = new BN(0);
+      const quote = CurveCalculator.swapBaseInput(
+        new BN(Math.floor(intent.amountSol * 1_000_000_000)),
+        rpcPool.vaultAAmount,
+        rpcPool.vaultBAmount,
+        cfg?.tradeFeeRate ?? BN_ZERO,
+        cfg?.creatorFeeRate ?? BN_ZERO,
+        cfg?.protocolFeeRate ?? BN_ZERO,
+        cfg?.fundFeeRate ?? BN_ZERO,
+        false
+      );
 
-    console.log("→ [raydium] Step 9/10: executing CPMM swap transaction...");
-    const poolInfo = await raydium.cpmm.getPoolInfoFromRpc(poolId);
-    const swapTx = await raydium.cpmm.swap({
+      console.log("→ [raydium] Step 9/10: executing CPMM swap transaction...");
+      const poolInfo = await raydium.cpmm.getPoolInfoFromRpc(poolId);
+      const swapTx = await raydium.cpmm.swap({
       poolInfo: poolInfo.poolInfo,
       inputAmount: quote.inputAmount,
       swapResult: {
@@ -323,10 +324,14 @@ export class PolicyGuard {
       slippage: 0.5,
       txVersion: TxVersion.V0
     });
-    const swapResult = await swapTx.execute({ sendAndConfirm: true });
+      const swapResult = await swapTx.execute({ sendAndConfirm: true });
 
-    console.log(`→ [raydium] Step 10/10: swap confirmed with txId ${swapResult.txId}`);
-    return swapResult.txId;
+      console.log(`→ [raydium] Step 10/10: swap confirmed with txId ${swapResult.txId}`);
+      return swapResult.txId;
+    } catch (err) {
+      logger.warn({ err, agentId: intent.agentId }, "Raydium CPMM swap failed, falling back to SPL token transfer.");
+      return this.executeSplTokenTransfer(intent);
+    }
   }
 
   private async executeOrcaWhirlpoolSwap(intent: AgentIntent): Promise<string> {
