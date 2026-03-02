@@ -287,9 +287,8 @@ export class PolicyGuard {
       await new Promise((r) => setTimeout(r, 1500));
 
       console.log("→ [raydium] Step 7/10: fetching pool info from RPC...");
-      const rpcPools = await raydium.cpmm.getRpcPoolInfos([poolId]);
-      const rpcPool = rpcPools[poolId];
-      if (!rpcPool) {
+      const { poolInfo, rpcData: rpcPool } = await raydium.cpmm.getPoolInfoFromRpc(poolId);
+      if (!poolInfo || !rpcPool) {
         throw await this.violation(intent, "RAYDIUM_POOL_NOT_FOUND", `Pool ${poolId} not found via RPC after creation.`);
       }
 
@@ -308,22 +307,21 @@ export class PolicyGuard {
       );
 
       console.log("→ [raydium] Step 9/10: executing CPMM swap transaction...");
-      const poolInfo = await raydium.cpmm.getPoolInfoFromRpc(poolId);
       const swapTx = await raydium.cpmm.swap({
-      poolInfo: poolInfo.poolInfo,
-      inputAmount: quote.inputAmount,
-      swapResult: {
+        poolInfo,
         inputAmount: quote.inputAmount,
-        outputAmount: quote.outputAmount
-      },
-      baseIn: true,
-      // Use a generous execution slippage (50%) for devnet demo pools.
-      // Fresh pools only have 1e9/1e9 liquidity; any meaningful swap has
-      // large price impact. Policy-level slippage (intent.slippageBps) was
-      // already enforced in validateAndExecute() step 6.
-      slippage: 0.5,
-      txVersion: TxVersion.V0
-    });
+        swapResult: {
+          inputAmount: quote.inputAmount,
+          outputAmount: quote.outputAmount
+        },
+        baseIn: true,
+        // Use a generous execution slippage (50%) for devnet demo pools.
+        // Fresh pools only have 1e9/1e9 liquidity; any meaningful swap has
+        // large price impact. Policy-level slippage (intent.slippageBps) was
+        // already enforced in validateAndExecute() step 6.
+        slippage: 0.5,
+        txVersion: TxVersion.V0
+      });
       const swapResult = await swapTx.execute({ sendAndConfirm: true });
 
       console.log(`→ [raydium] Step 10/10: swap confirmed with txId ${swapResult.txId}`);
@@ -341,7 +339,7 @@ export class PolicyGuard {
         publicKey: this.signer.publicKey,
         signTransaction: async <T>(tx: T): Promise<T> => {
           const txWithSign = tx as T & { sign?: (...args: unknown[]) => unknown; partialSign?: (...args: unknown[]) => unknown };
-          if (typeof txWithSign.sign === "function") txWithSign.sign(this.signer);
+          if (typeof txWithSign.sign === "function") txWithSign.sign([this.signer]);
           if (typeof txWithSign.partialSign === "function") txWithSign.partialSign(this.signer);
           return tx;
         },
