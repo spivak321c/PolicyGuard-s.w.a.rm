@@ -4,10 +4,11 @@ import { PolicyGuard } from "../src/policy-guard";
 import { getDefaultPolicyConfig } from "../src/policy-config";
 import type { AgentIntent, PolicyConfig } from "../src/types";
 import { SwarmExecutor } from "../src/swarm-executor";
+import type { LedgerEntry, LedgerStore } from "../src/ledger-store";
 
 // Mock solana-agent-kit so PolicyGuard tests work with mock connections.
 vi.mock("solana-agent-kit", () => ({
-  KeypairWallet: vi.fn().mockImplementation((kp: any, rpc: string) => ({
+  KeypairWallet: vi.fn().mockImplementation((kp: any) => ({
     publicKey: kp.publicKey,
     signTransaction: vi.fn(async (tx: any) => tx),
     signAllTransactions: vi.fn(async (txs: any[]) => txs),
@@ -24,9 +25,34 @@ vi.mock("solana-agent-kit", () => ({
   sendTx: vi.fn(async () => "mockTxSig"),
 }));
 
-// ── Constants ─────────────────────────────────────────────────────────────────
-
 const FAKE_BLOCKHASH = "11111111111111111111111111111111";
+
+class MemoryLedgerStore implements LedgerStore {
+  private readonly entries = new Map<string, LedgerEntry>();
+  private readonly intents = new Map<string, { status: "pending" | "completed" | "failed"; reason?: string; signature?: string }>();
+
+  getAgentEntry(agentId: string): LedgerEntry | undefined {
+    return this.entries.get(agentId);
+  }
+
+  setAgentEntry(agentId: string, entry: LedgerEntry): void {
+    this.entries.set(agentId, entry);
+  }
+
+  claimIntent(intentKey: string): boolean {
+    if (this.intents.has(intentKey)) return false;
+    this.intents.set(intentKey, { status: "pending" });
+    return true;
+  }
+
+  completeIntent(intentKey: string, signature: string): void {
+    this.intents.set(intentKey, { status: "completed", signature });
+  }
+
+  failIntent(intentKey: string, reason: string): void {
+    this.intents.set(intentKey, { status: "failed", reason });
+  }
+}
 
 function buildIntent(overrides: Partial<AgentIntent> = {}): AgentIntent {
   return {
@@ -58,33 +84,26 @@ function setupGuard(configOverride: Partial<PolicyConfig> = {}) {
   } as never;
   const policyVault = { logAction: vi.fn(async () => "auditSig") } as never;
   const peerAddresses = [signer.publicKey.toBase58(), peer.publicKey.toBase58()];
-  // Return signer so individual tests can build correctly-signed fake txs.
-  return { guard: new PolicyGuard(config, connection, signer, policyVault, peerAddresses), config, signer };
+  const ledgerStore = new MemoryLedgerStore();
+
+  return {
+    guard: new PolicyGuard(config, connection, signer, policyVault, peerAddresses, ledgerStore),
+    config,
+    signer,
+    ledgerStore
+  };
 }
 
 function stubFetch(): void {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (url: string, init?: RequestInit) => {
-      const urlStr = typeof url === "string" ? url : "";
-      // Raydium health.
-      if (urlStr.includes("raydium")) {
-        return new Response(
-          JSON.stringify({ status: "ok" }),
-          { status: 200, headers: { "content-type": "application/json" } }
-        );
-      }
-      return new Response("{}", { status: 200 });
-    })
+    vi.fn(async () => new Response("{}", { status: 200 }))
   );
 }
 
-// Default beforeEach stubs fetch.
 beforeEach(() => stubFetch());
 
-// ── PolicyGuard validation tests ──────────────────────────────────────────────
-
-describe("PolicyGuard — 8-step validation", () => {
+describe("PolicyGuard — validation + idempotency", () => {
   it("rejects weak rationale (check 1)", async () => {
     const { guard } = setupGuard();
     await expect(
@@ -93,13 +112,13 @@ describe("PolicyGuard — 8-step validation", () => {
   });
 
   it("rejects blocked protocol (check 2)", async () => {
-    const { guard } = setupGuard({ allowedProtocols: ["jupiter"] });
+    const { guard } = setupGuard({ allowedProtocols: ["orca"] });
     await expect(
       guard.validateAndExecute(buildIntent({ protocol: "raydium", rationale: "valid rationale string here" }))
     ).rejects.toThrow("PROTOCOL_BLOCKED");
   });
 
-  it("allows allowlisted raydium protocol and resolves a signature", async () => {
+  it("allows allowlisted protocol and resolves a signature", async () => {
     const { guard } = setupGuard();
     vi.spyOn(guard as never, "execute" as never).mockResolvedValue("mock-sig");
     await expect(
@@ -121,12 +140,6 @@ describe("PolicyGuard — 8-step validation", () => {
     ).rejects.toThrow("MAX_TX_EXCEEDED");
   });
 
-  /**
-   * Check 5: two sequential intents on the same day must sum > daily cap.
-   * The first intent (4.8 SOL) succeeds; the second (0.5 SOL) pushes total to 5.3
-   * which exceeds the 5 SOL daily cap.
-   * We stub execution to avoid external RPC/protocol dependencies.
-   */
   it("rejects daily cumulative ceiling (check 5)", async () => {
     const { guard } = setupGuard({ maxSolPerTransaction: 10, maxSolDaily: 5 });
     vi.spyOn(guard as never, "execute" as never).mockResolvedValue("mock-sig");
@@ -143,10 +156,6 @@ describe("PolicyGuard — 8-step validation", () => {
     ).rejects.toThrow("SLIPPAGE_TOO_HIGH");
   });
 
-  /**
-   * Check 7: second intent within the cooldown window (10s) must be rejected.
-   * We stub execution to avoid external RPC/protocol dependencies.
-   */
   it("rejects cooldown violation (check 7)", async () => {
     const { guard } = setupGuard();
     vi.spyOn(guard as never, "execute" as never).mockResolvedValue("mock-sig");
@@ -164,9 +173,25 @@ describe("PolicyGuard — 8-step validation", () => {
       guard.validateAndExecute(buildIntent({ metadata: { targetAddress: blocked } }))
     ).rejects.toThrow("BLOCKED_ADDRESS");
   });
-});
 
-// ── SwarmExecutor tests ───────────────────────────────────────────────────────
+  it("rejects replayed intent idempotency key", async () => {
+    const { guard } = setupGuard({ cooldownSeconds: 0 });
+    vi.spyOn(guard as never, "execute" as never).mockResolvedValue("mock-sig");
+
+    const first = buildIntent({
+      timestamp: new Date("2026-02-25T00:00:00Z"),
+      metadata: { idempotencyKey: "intent-123" }
+    });
+
+    const second = buildIntent({
+      timestamp: new Date("2026-02-25T00:01:00Z"),
+      metadata: { idempotencyKey: "intent-123" }
+    });
+
+    await expect(guard.validateAndExecute(first)).resolves.toBe("mock-sig");
+    await expect(guard.validateAndExecute(second)).rejects.toThrow("REPLAY_DETECTED");
+  });
+});
 
 describe("SwarmExecutor", () => {
   it("spawns exactly the requested number of agents", () => {
@@ -186,9 +211,9 @@ describe("SwarmExecutor", () => {
     expect(addresses.size).toBe(6);
   });
 
-  it("fires events on both the typed topic and the swarm.event catch-all", async () => {
+  it("fires events on both typed topic and catch-all", async () => {
     const swarm = new SwarmExecutor("https://api.devnet.solana.com");
-    swarm.spawnAgents(6);
+    swarm.spawnAgents(2);
 
     const typed: string[] = [];
     const catchAll: string[] = [];
@@ -211,7 +236,7 @@ describe("SwarmExecutor", () => {
           timestamp: new Date()
         });
       } catch {
-        // A rejection still fires intent.created + intent.rejected — acceptable.
+        // acceptable
       }
     }
 

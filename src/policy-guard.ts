@@ -1,6 +1,5 @@
 import { formatISO } from "date-fns";
 import pino from "pino";
-import { existsSync, readFileSync, writeFileSync } from "fs";
 import {
   LAMPORTS_PER_SOL,
   SystemProgram,
@@ -27,6 +26,9 @@ import { BN } from "@coral-xyz/anchor";
 import type { AgentIntent, PolicyConfig, PolicyAuditRecord } from "./types";
 import { PolicyViolationError } from "./types";
 import { PolicyVaultClient } from "./policy-vault";
+import type { LedgerStore } from "./ledger-store";
+import { getDefaultLedgerStore } from "./ledger-store";
+import { createHash } from "crypto";
 
 const logger = pino({ name: "policy-guard", level: process.env.SWARM_TECHNICAL_LOGS === "1" ? "info" : "silent" });
 
@@ -35,7 +37,6 @@ const ORCA_DEVNET_USDC_MINT = "BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k";
 const SOL_MINT_ADDRESS = "So11111111111111111111111111111111111111112";
 
 export class PolicyGuard {
-  private readonly ledgerPath: string;
   private readonly agentKit: SolanaAgentKit;
   private readonly peerAddresses: string[];
   private peerIndex = 0;
@@ -45,12 +46,12 @@ export class PolicyGuard {
     private readonly connection: Connection,
     private readonly signer: Keypair,
     private readonly policyVault: PolicyVaultClient,
-    peerAddresses: string[] = []
+    peerAddresses: string[] = [],
+    private readonly ledgerStore: LedgerStore = getDefaultLedgerStore()
   ) {
     // Create a SolanaAgentKit instance using KeypairWallet for this agent.
     const wallet = new KeypairWallet(signer, connection.rpcEndpoint);
     this.agentKit = new SolanaAgentKit(wallet, connection.rpcEndpoint, {});
-    this.ledgerPath = `./ledger-${signer.publicKey.toBase58().slice(0, 8)}.json`;
     this.peerAddresses = peerAddresses.filter(
       (addr) => addr !== signer.publicKey.toBase58()
     );
@@ -68,22 +69,32 @@ export class PolicyGuard {
   }
 
   private readLedgerEntry(key: string): { date: string; spentSol: number; lastIntentTs: number } | undefined {
-    if (!existsSync(this.ledgerPath)) {
-      return undefined;
-    }
-
-    const contents = readFileSync(this.ledgerPath, "utf8");
-    const ledger = JSON.parse(contents) as Record<string, { date: string; spentSol: number; lastIntentTs: number }>;
-    return ledger[key];
+    return this.ledgerStore.getAgentEntry(key);
   }
 
   private writeLedgerEntry(key: string, value: { date: string; spentSol: number; lastIntentTs: number }): void {
-    const ledger = existsSync(this.ledgerPath)
-      ? JSON.parse(readFileSync(this.ledgerPath, "utf8")) as Record<string, { date: string; spentSol: number; lastIntentTs: number }>
-      : {};
+    this.ledgerStore.setAgentEntry(key, value);
+  }
 
-    ledger[key] = value;
-    writeFileSync(this.ledgerPath, JSON.stringify(ledger, null, 2));
+  private intentReplayKey(intent: AgentIntent): string {
+    const explicit = intent.metadata?.idempotencyKey;
+    if (typeof explicit === "string" && explicit.trim().length > 0) {
+      return `idk:${explicit.trim()}`;
+    }
+
+    const canonical = JSON.stringify({
+      agentId: intent.agentId,
+      type: intent.type,
+      protocol: intent.protocol,
+      amountSol: intent.amountSol,
+      inputMint: intent.inputMint ?? "",
+      outputMint: intent.outputMint ?? "",
+      slippageBps: intent.slippageBps,
+      rationale: intent.rationale,
+      timestamp: intent.timestamp.toISOString()
+    });
+
+    return `hash:${createHash("sha256").update(canonical).digest("hex")}`;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -150,14 +161,30 @@ export class PolicyGuard {
       throw await this.violation(intent, "RESERVE_GUARD", `Balance would fall below treasury reserve floor of ${this.config.minTreasuryReserveSol} SOL.`);
     }
 
+    // Idempotency / replay protection.
+    const replayKey = this.intentReplayKey(intent);
+    const claimed = this.ledgerStore.claimIntent(replayKey, intent.agentId, nowTs);
+    if (!claimed) {
+      throw await this.violation(intent, "REPLAY_DETECTED", "Intent replay detected: this idempotency key was already used.");
+    }
+
     // ── All checks passed — execute. ──────────────────────────────────────────
-    const signature = await this.execute(intent);
+    let signature: string;
+    try {
+      signature = await this.execute(intent);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.ledgerStore.failIntent(replayKey, reason);
+      throw err;
+    }
 
     this.writeLedgerEntry(key, {
       date: day,
       spentSol: currentSpend + intent.amountSol,
       lastIntentTs: nowTs
     });
+
+    this.ledgerStore.completeIntent(replayKey, signature);
 
     const record: PolicyAuditRecord = {
       agentId: intent.agentId,
