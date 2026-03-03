@@ -1,5 +1,5 @@
 import { mkdirSync } from "fs";
-import { createRequire } from "module";
+import { Database } from "bun:sqlite";
 
 export interface LedgerEntry {
   date: string;
@@ -21,20 +21,14 @@ export interface LedgerStore {
  * Stores per-agent spend/cooldown state + idempotency keys.
  */
 export class SqliteLedgerStore implements LedgerStore {
-  private readonly db: {
-    exec: (sql: string) => void;
-    prepare: (sql: string) => { get: (...args: unknown[]) => unknown; run: (...args: unknown[]) => unknown };
-    close: () => void;
-  };
+  private readonly db: Database;
 
   constructor(path = "./.policyguard/policy-ledger.sqlite") {
     const normalized = path.trim().length > 0 ? path : "./.policyguard/policy-ledger.sqlite";
     const folder = normalized.includes("/") ? normalized.slice(0, normalized.lastIndexOf("/")) : ".";
     if (folder.length > 0 && folder !== ".") mkdirSync(folder, { recursive: true });
 
-    const require = createRequire(import.meta.url);
-    const sqlite = require("node:sqlite") as { DatabaseSync: new (path: string) => SqliteLedgerStore["db"] };
-    this.db = new sqlite.DatabaseSync(normalized);
+    this.db = new Database(normalized);
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec("PRAGMA busy_timeout = 5000;");
 
@@ -67,8 +61,10 @@ export class SqliteLedgerStore implements LedgerStore {
   }
 
   getAgentEntry(agentId: string): LedgerEntry | undefined {
-    const stmt = this.db.prepare("SELECT date, spent_sol, last_intent_ts, checksum FROM agent_ledger WHERE agent_id = ?");
-    const row = stmt.get(agentId) as { date: string; spent_sol: number; last_intent_ts: number; checksum: string } | undefined;
+    const row = this.db
+      .query("SELECT date, spent_sol, last_intent_ts, checksum FROM agent_ledger WHERE agent_id = ?1")
+      .get(agentId) as { date: string; spent_sol: number; last_intent_ts: number; checksum: string } | null;
+
     if (!row) return undefined;
 
     const entry: LedgerEntry = {
@@ -87,49 +83,50 @@ export class SqliteLedgerStore implements LedgerStore {
   setAgentEntry(agentId: string, entry: LedgerEntry): void {
     const now = Date.now();
     const checksum = this.checksum(entry);
-    const stmt = this.db.prepare(`
-      INSERT INTO agent_ledger (agent_id, date, spent_sol, last_intent_ts, checksum, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(agent_id) DO UPDATE SET
-        date = excluded.date,
-        spent_sol = excluded.spent_sol,
-        last_intent_ts = excluded.last_intent_ts,
-        checksum = excluded.checksum,
-        updated_at = excluded.updated_at
-    `);
-
-    stmt.run(agentId, entry.date, entry.spentSol, entry.lastIntentTs, checksum, now);
+    this.db
+      .query(`
+        INSERT INTO agent_ledger (agent_id, date, spent_sol, last_intent_ts, checksum, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        ON CONFLICT(agent_id) DO UPDATE SET
+          date = excluded.date,
+          spent_sol = excluded.spent_sol,
+          last_intent_ts = excluded.last_intent_ts,
+          checksum = excluded.checksum,
+          updated_at = excluded.updated_at
+      `)
+      .run(agentId, entry.date, entry.spentSol, entry.lastIntentTs, checksum, now);
   }
 
   claimIntent(intentKey: string, agentId: string, createdAtTs: number): boolean {
     const now = Date.now();
-    const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO processed_intents (intent_key, agent_id, created_at_ts, status, updated_at)
-      VALUES (?, ?, ?, 'pending', ?)
-    `);
+    const result = this.db
+      .query(`
+        INSERT OR IGNORE INTO processed_intents (intent_key, agent_id, created_at_ts, status, updated_at)
+        VALUES (?1, ?2, ?3, 'pending', ?4)
+      `)
+      .run(intentKey, agentId, createdAtTs, now);
 
-    const result = stmt.run(intentKey, agentId, createdAtTs, now) as { changes?: number };
-    return (result.changes ?? 0) > 0;
+    return result.changes > 0;
   }
 
   completeIntent(intentKey: string, signature: string): void {
-    const stmt = this.db.prepare(`
-      UPDATE processed_intents
-      SET status = 'completed', signature = ?, updated_at = ?
-      WHERE intent_key = ?
-    `);
-
-    stmt.run(signature, Date.now(), intentKey);
+    this.db
+      .query(`
+        UPDATE processed_intents
+        SET status = 'completed', signature = ?2, updated_at = ?3
+        WHERE intent_key = ?1
+      `)
+      .run(intentKey, signature, Date.now());
   }
 
   failIntent(intentKey: string, reason: string): void {
-    const stmt = this.db.prepare(`
-      UPDATE processed_intents
-      SET status = 'failed', reason = ?, updated_at = ?
-      WHERE intent_key = ?
-    `);
-
-    stmt.run(reason.slice(0, 512), Date.now(), intentKey);
+    this.db
+      .query(`
+        UPDATE processed_intents
+        SET status = 'failed', reason = ?2, updated_at = ?3
+        WHERE intent_key = ?1
+      `)
+      .run(intentKey, reason.slice(0, 512), Date.now());
   }
 
   close(): void {

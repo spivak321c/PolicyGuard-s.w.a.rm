@@ -1,4 +1,62 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("bun:sqlite", () => {
+  class MockDatabase {
+    private readonly ledger = new Map<string, { date: string; spent_sol: number; last_intent_ts: number; checksum: string }>();
+    private readonly intents = new Map<string, { agent_id: string; created_at_ts: number; status: string; signature?: string; reason?: string }>();
+
+    exec(): void {}
+
+    query(sql: string) {
+      const normalized = sql.toLowerCase();
+      if (normalized.includes("select date, spent_sol")) {
+        return {
+          get: (agentId: string) => this.ledger.get(agentId) ?? null
+        };
+      }
+      if (normalized.includes("insert into agent_ledger")) {
+        return {
+          run: (agentId: string, date: string, spentSol: number, lastIntentTs: number, checksum: string) => {
+            this.ledger.set(agentId, { date, spent_sol: spentSol, last_intent_ts: lastIntentTs, checksum });
+            return { changes: 1 };
+          }
+        };
+      }
+      if (normalized.includes("insert or ignore into processed_intents")) {
+        return {
+          run: (intentKey: string, agentId: string, createdAtTs: number) => {
+            if (this.intents.has(intentKey)) return { changes: 0 };
+            this.intents.set(intentKey, { agent_id: agentId, created_at_ts: createdAtTs, status: "pending" });
+            return { changes: 1 };
+          }
+        };
+      }
+      if (normalized.includes("update processed_intents") && normalized.includes("completed")) {
+        return {
+          run: (intentKey: string, signature: string) => {
+            const it = this.intents.get(intentKey);
+            if (it) this.intents.set(intentKey, { ...it, status: "completed", signature });
+            return { changes: 1 };
+          }
+        };
+      }
+      if (normalized.includes("update processed_intents") && normalized.includes("failed")) {
+        return {
+          run: (intentKey: string, reason: string) => {
+            const it = this.intents.get(intentKey);
+            if (it) this.intents.set(intentKey, { ...it, status: "failed", reason });
+            return { changes: 1 };
+          }
+        };
+      }
+      return { get: () => null, run: () => ({ changes: 0 }) };
+    }
+
+    close(): void {}
+  }
+
+  return { Database: MockDatabase };
+}, { virtual: true });
 import { Keypair } from "@solana/web3.js";
 import { PolicyGuard } from "../src/policy-guard";
 import { getDefaultPolicyConfig } from "../src/policy-config";
