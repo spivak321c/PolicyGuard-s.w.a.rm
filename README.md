@@ -46,6 +46,10 @@ bun run src/main.ts run-swarm --agents=2 --engine=groq --funder=funder.json
 
 # Generic OpenAI-compatible engine
 bun run src/main.ts run-swarm --agents=2 --engine=generic --funder=funder.json
+# Persist/reuse agent wallets across runs
+bun run src/main.ts run-swarm --agents=2 --agents-file=agents.json --engine=coordinator --coordinator=groq:planner,openai:reviewer --funder=funder.json
+# Enable companion inter-agent SPL transfer after successful swaps
+bun run src/main.ts run-swarm --agents=2 --engine=scripted --with-peer-transfer=true --funder=funder.json
 ```
 
 ### 5) Run attack simulation
@@ -75,6 +79,10 @@ bun run src/main.ts create-wallet
 bun run src/main.ts run-swarm --agents=2 --engine=scripted --funder=funder.json
 bun run src/main.ts run-swarm --agents=2 --engine=groq --funder=funder.json
 bun run src/main.ts run-swarm --agents=2 --engine=generic --funder=funder.json
+# Persist/reuse agent wallets across runs
+bun run src/main.ts run-swarm --agents=2 --agents-file=agents.json --engine=coordinator --coordinator=groq:planner,openai:reviewer --funder=funder.json
+# Enable companion inter-agent SPL transfer after successful swaps
+bun run src/main.ts run-swarm --agents=2 --engine=scripted --with-peer-transfer=true --funder=funder.json
 bun run src/main.ts attack-test
 bun run example
 bun run test
@@ -205,3 +213,9 @@ You provided this devnet transaction evidence:
 - Deep technical write-up: [`DEEP_DIVE.md`](./DEEP_DIVE.md)
 - Agent-readable capabilities: [`SKILLS.md`](./SKILLS.md)
 
+
+
+### CLI-only flags for reproducible runs
+
+- `--agents-file=agents.json`: persist/reuse generated agent wallets across runs (avoids fresh wallets every run).
+- `--with-peer-transfer=true`: after a successful swap, perform a companion inter-agent SPL token transfer.

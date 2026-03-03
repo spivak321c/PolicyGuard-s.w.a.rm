@@ -87,6 +87,34 @@ function buildEngine(args: string[]): IAgentDecisionEngine {
 }
 
 
+
+function loadOrCreateAgentWallets(path: string, count: number): Keypair[] {
+  if (!fs.existsSync(path)) {
+    const generated = Array.from({ length: count }, () => Keypair.generate());
+    fs.writeFileSync(path, JSON.stringify(generated.map((k) => Array.from(k.secretKey)), null, 2));
+    console.log(`
+Agent wallet store created: ${path}`);
+    return generated;
+  }
+
+  const raw = JSON.parse(fs.readFileSync(path, "utf-8")) as number[][];
+  const loaded = raw
+    .filter((arr) => Array.isArray(arr) && arr.length >= 64)
+    .map((arr) => Keypair.fromSecretKey(new Uint8Array(arr)));
+
+  const keypairs = [...loaded];
+  while (keypairs.length < count) {
+    keypairs.push(Keypair.generate());
+  }
+
+  if (keypairs.length !== loaded.length) {
+    fs.writeFileSync(path, JSON.stringify(keypairs.map((k) => Array.from(k.secretKey)), null, 2));
+    console.log(`Updated agent wallet store with ${keypairs.length - loaded.length} additional wallet(s): ${path}`);
+  }
+
+  return keypairs.slice(0, count);
+}
+
 function loadFunderWallet(args: string[]): Keypair | undefined {
   const funderPath = parseFlag(args, "funder");
   if (!funderPath) return undefined;
@@ -118,6 +146,11 @@ async function runSwarm(args: string[]): Promise<void> {
   const rpc = parseRpcArg(args);
   const engine = buildEngine(args);
 
+  const withPeerTransfer = (parseFlag(args, "with-peer-transfer") ?? "false").toLowerCase() === "true";
+  if (withPeerTransfer) {
+    process.env.SWAP_WITH_PEER_SPL_TRANSFER = "true";
+  }
+
   const engineName = engine.constructor.name;
   console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
   console.log("🚀 Starting PolicyGuard Swarm Run");
@@ -127,7 +160,10 @@ async function runSwarm(args: string[]): Promise<void> {
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
   const swarm = rpc ? new SwarmExecutor(rpc, engine) : new SwarmExecutor(undefined, engine);
-  const agents = swarm.spawnAgents(count);
+
+  const agentsFile = parseFlag(args, "agents-file");
+  const persistedAgents = agentsFile ? loadOrCreateAgentWallets(agentsFile, count) : undefined;
+  const agents = swarm.spawnAgents(count, undefined, persistedAgents);
   console.log("👥 Spawned agents:");
   for (const agent of agents) {
     console.log(`   - ${agent.id} (${agent.role}) wallet=${shortAddress(agent.walletAddress)}`);
@@ -269,7 +305,7 @@ async function main(): Promise<void> {
       console.log(`
 Usage:
   bun run src/main.ts create-wallet
-  bun run src/main.ts run-swarm   [--agents=6] [--rpc=<url>] [--airdrop-rpc=<url>] [--engine=scripted|groq|gemini|openai|openrouter|mistral|ollama|generic|coordinator] [--coordinator=model1:role1,model2:role2,...]
+  bun run src/main.ts run-swarm   [--agents=6] [--rpc=<url>] [--agents-file=<path.json>] [--with-peer-transfer=true|false] [--airdrop-rpc=<url>] [--engine=scripted|groq|gemini|openai|openrouter|mistral|ollama|generic|coordinator] [--coordinator=model1:role1,model2:role2,...]
   bun run src/main.ts attack-test [--rpc=<url>]
 
 Engines:
@@ -306,7 +342,10 @@ Examples:
   # Generic endpoint
   LLM_ENDPOINT=https://api.together.xyz/v1/chat/completions \
   LLM_API_KEY=your_key LLM_MODEL=mistralai/Mistral-7B-Instruct-v0.3 \
-    bun run src/main.ts run-swarm --engine=generic      `);
+    bun run src/main.ts run-swarm --engine=generic
+
+  # Persist agent wallets across runs
+  bun run src/main.ts run-swarm --agents=2 --agents-file=agents.json --engine=coordinator --coordinator=groq:planner,openai:reviewer --with-peer-transfer=true      `);
   }
 }
 

@@ -106,11 +106,16 @@ export class SwarmExecutor {
     this.decisionEngine = decisionEngine ?? new ScriptedDecisionEngine();
   }
 
-  spawnAgents(count = 6, engineMap?: Map<number, IAgentDecisionEngine>): SwarmAgent[] {
-    // Two-pass spawn: first generate keypairs, then create PolicyGuards with peer addresses.
+  spawnAgents(
+    count = 6,
+    engineMap?: Map<number, IAgentDecisionEngine>,
+    persistedKeypairs?: Keypair[]
+  ): SwarmAgent[] {
+    // Two-pass spawn: first generate keypairs (or use persisted ones), then create PolicyGuards with peer addresses.
     const keypairs: Keypair[] = [];
     for (let i = 0; i < count; i += 1) {
-      keypairs.push(Keypair.generate());
+      const persisted = persistedKeypairs?.[i];
+      keypairs.push(persisted ?? Keypair.generate());
     }
 
     // Collect all wallet addresses so each PolicyGuard knows its peers.

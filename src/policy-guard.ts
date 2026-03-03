@@ -231,6 +231,29 @@ export class PolicyGuard {
     return sig;
   }
 
+  private shouldRunPeerTransferCompanion(intent: AgentIntent): boolean {
+    const metaFlag = intent.metadata?.postPeerSplTransfer;
+    if (typeof metaFlag === "boolean") return metaFlag;
+    return process.env.SWAP_WITH_PEER_SPL_TRANSFER === "true";
+  }
+
+  private async maybeRunPostSwapPeerSplTransfer(intent: AgentIntent): Promise<void> {
+    if (intent.type !== "swap") return;
+    if (!this.shouldRunPeerTransferCompanion(intent)) return;
+
+    const companionAmount = Math.max(Math.min(intent.amountSol * 0.1, 0.05), 0.005);
+    const companionIntent: AgentIntent = {
+      ...intent,
+      type: "transfer",
+      protocol: "spl-token-swap",
+      amountSol: companionAmount,
+      rationale: `${intent.rationale} | Companion peer SPL transfer enabled.`
+    };
+
+    const companionSig = await this.executeSplTokenTransfer(companionIntent);
+    logger.info({ companionSig, agentId: intent.agentId }, "Companion post-swap peer SPL transfer completed.");
+  }
+
   // ── Raydium CPMM devnet swap demo ───────────────────────────────────────────
 
   private async executeRaydiumCpmmSwap(intent: AgentIntent): Promise<string> {
@@ -314,8 +337,8 @@ export class PolicyGuard {
       await new Promise((r) => setTimeout(r, 1500));
 
       console.log("→ [raydium] Step 7/10: fetching pool info from RPC...");
-      const { poolInfo, rpcData: rpcPool } = await raydium.cpmm.getPoolInfoFromRpc(poolId);
-      if (!poolInfo || !rpcPool) {
+      const { poolInfo, poolKeys, rpcData: rpcPool } = await raydium.cpmm.getPoolInfoFromRpc(poolId);
+      if (!poolInfo || !poolKeys || !poolKeys.authority || !rpcPool) {
         throw await this.violation(intent, "RAYDIUM_POOL_NOT_FOUND", `Pool ${poolId} not found via RPC after creation.`);
       }
 
@@ -336,12 +359,14 @@ export class PolicyGuard {
       console.log("→ [raydium] Step 9/10: executing CPMM swap transaction...");
       const swapTx = await raydium.cpmm.swap({
         poolInfo,
+        poolKeys,
         inputAmount: quote.inputAmount,
         swapResult: {
           inputAmount: quote.inputAmount,
           outputAmount: quote.outputAmount
         },
         baseIn: true,
+        fixedOut: false,
         // Use a generous execution slippage (50%) for devnet demo pools.
         // Fresh pools only have 1e9/1e9 liquidity; any meaningful swap has
         // large price impact. Policy-level slippage (intent.slippageBps) was
@@ -352,6 +377,7 @@ export class PolicyGuard {
       const swapResult = await swapTx.execute({ sendAndConfirm: true });
 
       console.log(`→ [raydium] Step 10/10: swap confirmed with txId ${swapResult.txId}`);
+      await this.maybeRunPostSwapPeerSplTransfer(intent);
       return swapResult.txId;
     } catch (err) {
       logger.warn({ err, agentId: intent.agentId }, "Raydium CPMM swap failed, falling back to SPL token transfer.");
@@ -398,6 +424,7 @@ export class PolicyGuard {
       const txId = await txPayload.buildAndExecute();
 
       console.log(`→ [orca] Step 5/5: Whirlpool swap confirmed: ${txId}`);
+      await this.maybeRunPostSwapPeerSplTransfer(intent);
       return txId;
     } catch (err) {
       logger.warn({ err, agentId: intent.agentId }, "Orca Whirlpool swap failed, falling back to SPL token transfer.");
