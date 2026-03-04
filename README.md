@@ -13,6 +13,20 @@ This project demonstrates:
 
 ---
 
+## Prerequisites: Install Bun
+
+This project is built with [Bun](https://bun.sh/). You must have it installed to run the swarm.
+
+**Linux & macOS:**
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+**Windows & Other Platforms:**
+See the [official installation guide](https://bun.sh/docs/installation).
+
+---
+
 ## Quick start (judge-friendly)
 
 ### 1) Install
