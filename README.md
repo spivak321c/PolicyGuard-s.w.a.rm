@@ -231,8 +231,23 @@ Durable safety features now included:
 
 ## Devnet evidence
 
-You provided this devnet transaction evidence:
-- https://explorer.solana.com/tx/gMF8S4N8aPULw6hkefgehKRcsnrZ2cgCkQKF2ftS9MDnriwcyUExWGCGUdYbA3PTUSugWc59mjsw7K8y5P4Rmms?cluster=devnet
+Real on-chain interaction evidence on Solana devnet:
+
+### 1) Groq Engine Swarm
+**Command:** `bun run src/main.ts run-swarm --agents=2 --engine=groq --funder=funder.json`
+
+| Agent | Action | Signature |
+|---|---|---|
+| agent-1 | Orca Swap (0.2 SOL) | [`498a...NW6P`](https://explorer.solana.com/tx/498a112g3YGbEPjkHH9Yb5sJ2qzpAQRvXkoHYZ1WBvzAT5YEFScFdvKD1FX5GTDQk3SEtT6QS1xPkBCQR6X8NW6P?cluster=devnet) |
+| agent-2 | SPL Token Transfer | [`2DXV...WNVN`](https://explorer.solana.com/tx/2DXV6qFmPRrLhmCdqotWcWy4k3Vb4p5rNT3t8zcYjX4XFewrqsENxUBxFazBHJfN5WBTFKgbcD6UZFDjfwrqWNVN?cluster=devnet) |
+
+### 2) Coordinator Engine Swarm
+**Command:** `bun run src/main.ts run-swarm --agents=2 --agents-file=agents.json --engine=coordinator --coordinator=groq:planner,groq:reviewer --funder=funder.json`
+
+| Agent | Action | Signature |
+|---|---|---|
+| agent-1 | Orca Swap (0.25 SOL) | [`5oAp...GZFf`](https://explorer.solana.com/tx/5oApkkeUJs17Lw3oRjZz48Bq6aLe5rQUGVtuyKoWhTBjxnSnTqFeUiayHwdteZ4q8kfEv5LvHehqEvrHwHyKgZFf?cluster=devnet) |
+| agent-2 | SPL Token Transfer | [`5RqL...Qse`](https://explorer.solana.com/tx/5RqLupc1rsHsGRfc3jsR4d33pgBBFA6KMv9VvD8Ry7Jifeaz65nsXUU5VZ14BQbvJG6jJBx1Y8GauE9bQYUVcQse?cluster=devnet) |
 
 ---
 
