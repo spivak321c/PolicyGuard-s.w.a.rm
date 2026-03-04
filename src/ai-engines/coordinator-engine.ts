@@ -27,7 +27,7 @@ export class CoordinatorEngine implements IAgentDecisionEngine {
   async buildIntent(input: {
     agentId: string;
     marketBias: "bullish" | "bearish" | "neutral";
-    protocolPreference: "raydium" | "orca" | "spl-token-swap";
+    protocolPreference: "orca" | "spl-token-swap";
   }): Promise<AgentIntent> {
     const rationales: string[] = [];
     const roles: string[] = [];

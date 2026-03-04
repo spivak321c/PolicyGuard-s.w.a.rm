@@ -170,9 +170,9 @@ describe("PolicyGuard — validation + idempotency", () => {
   });
 
   it("rejects blocked protocol (check 2)", async () => {
-    const { guard } = setupGuard({ allowedProtocols: ["orca"] });
+    const { guard } = setupGuard({ allowedProtocols: ["spl-token-swap"] });
     await expect(
-      guard.validateAndExecute(buildIntent({ protocol: "raydium", rationale: "valid rationale string here" }))
+      guard.validateAndExecute(buildIntent({ protocol: "orca", rationale: "valid rationale string here" }))
     ).rejects.toThrow("PROTOCOL_BLOCKED");
   });
 
@@ -180,7 +180,7 @@ describe("PolicyGuard — validation + idempotency", () => {
     const { guard } = setupGuard();
     vi.spyOn(guard as never, "execute" as never).mockResolvedValue("mock-sig");
     await expect(
-      guard.validateAndExecute(buildIntent({ protocol: "raydium", rationale: "valid raydium rationale string" }))
+      guard.validateAndExecute(buildIntent({ protocol: "orca", rationale: "valid orca rationale string" }))
     ).resolves.toBeTypeOf("string");
   });
 

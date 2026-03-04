@@ -38,7 +38,7 @@ export class GroqDecisionEngine implements IAgentDecisionEngine {
     buildIntent(input: {
         agentId: string;
         marketBias: "bullish" | "bearish" | "neutral";
-        protocolPreference: "raydium" | "orca" | "spl-token-swap";
+        protocolPreference: "orca" | "spl-token-swap";
     }): Promise<AgentIntent> {
         return this.engine.buildIntent(input);
     }

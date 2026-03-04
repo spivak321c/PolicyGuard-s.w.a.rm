@@ -1,16 +1,24 @@
 import { AnchorProvider, BN, Program, web3 } from "@coral-xyz/anchor";
 import { PublicKey } from "@solana/web3.js";
 import { createMemoInstruction } from "@solana/spl-memo";
+import { createHash } from "crypto";
 import type { PolicyAuditRecord } from "./types";
 
 const POLICY_VAULT_PROGRAM_ID = new PublicKey("11111111111111111111111111111111");
 
+/** Hash an arbitrary-length string to a 32-byte Buffer safe for use as a PDA seed. */
+function seedHash(value: string): Buffer {
+  return Buffer.from(createHash("sha256").update(value).digest());
+}
+
 export class PolicyVaultClient {
-  constructor(private readonly provider: AnchorProvider) {}
+  constructor(private readonly provider: AnchorProvider) { }
 
   private deriveAuditPda(agentId: string): [PublicKey, number] {
+    // agentId can be an arbitrarily long string at runtime; hash it to stay
+    // within Solana's 32-byte per-seed limit.
     return PublicKey.findProgramAddressSync(
-      [Buffer.from("audit"), Buffer.from(agentId)],
+      [Buffer.from("audit"), seedHash(agentId)],
       POLICY_VAULT_PROGRAM_ID
     );
   }

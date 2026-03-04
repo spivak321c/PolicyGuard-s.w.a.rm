@@ -256,7 +256,7 @@ export class SwarmExecutor {
 
     const tasks = this.agents.map(async (agent, index): Promise<SwarmRunResult> => {
       const marketBias = index % 2 === 0 ? "bullish" : "neutral";
-      const protocols = ["raydium", "orca", "spl-token-swap"] as const;
+      const protocols = ["orca", "spl-token-swap"] as const;
       const protocolPreference = protocols[index % protocols.length]!;
       try {
         agent.status = "planning";

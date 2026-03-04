@@ -24,7 +24,6 @@ This is intentionally a prototype architecture for bounty demonstration, not a p
 3. Agent submits intent to `PolicyGuard.validateAndExecute()`.
 4. PolicyGuard applies 8 checks in fixed order.
 5. If approved, PolicyGuard routes execution by protocol:
-   - `raydium`,
    - `orca`,
    - `spl-token-swap` fallback path.
 6. Result is emitted on event bus and logged through `PolicyVaultClient`.
@@ -63,7 +62,7 @@ Current logic: if agent balance < `0.8 SOL`, funder transfers `0.6 SOL`.
 ## 4) Intent model and AI integration
 
 `AgentIntent` includes:
-- `protocol` (`raydium | orca | spl-token-swap`),
+- `protocol` (`orca | spl-token-swap`),
 - `type`,
 - `amountSol`,
 - mint pair,
@@ -96,24 +95,12 @@ If any check fails, `PolicyViolationError` is thrown with explicit code and reas
 
 ## 6) Execution paths on devnet
 
-## 6.1 `raydium`
-
-- Attempts Raydium CPMM SDK flow on devnet:
-  - create mints,
-  - create ATAs,
-  - mint initial supply,
-  - fetch CPMM configs,
-  - create pool,
-  - quote swap,
-  - execute swap.
-- If this fails, code falls back to SPL-token transfer path.
-
-## 6.2 `orca`
+## 6.1 `orca`
 
 - Attempts Orca Whirlpool swap flow using devnet pool/mint constants.
 - If this fails, code falls back to SPL-token transfer path.
 
-## 6.3 `spl-token-swap` (implemented fallback path)
+## 6.2 `spl-token-swap` (implemented fallback path)
 
 - Create SPL mint,
 - create source ATA,
@@ -192,7 +179,7 @@ These are normal prototype tradeoffs, but should be upgraded for production-like
 - **Create wallet programmatically**: Yes (`Keypair.generate()` agent provisioning).
 - **Sign transactions automatically**: Yes (PolicyGuard execution with signer automation).
 - **Hold SOL or SPL tokens**: Yes (funder SOL + SPL mint/mintTo/transfer path).
-- **Interact with test dApp/protocol**: Yes (Raydium/Orca execution attempts + SPL Token Program interaction path).
+- **Interact with test dApp/protocol**: Yes (Orca Whirlpool execution attempts + SPL Token Program interaction path).
 - **Deep dive included**: Yes (this file).
 - **README + setup instructions**: Yes.
 - **SKILLS.md for agents**: Yes.

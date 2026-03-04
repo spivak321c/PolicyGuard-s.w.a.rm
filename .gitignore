@@ -7,7 +7,9 @@ dashboard/.svelte-kit/
 dashboard/build/
 *.keypair.json
 ledger-*.json
-BOUNTY_EVALUATION.md
 JUPITER.md
 RAYDIUM.md
 bun.lock
+.policyguard
+agents.json
+agents.json.old

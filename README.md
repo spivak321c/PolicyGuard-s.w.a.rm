@@ -7,7 +7,7 @@ This project demonstrates:
 - automated signing via per-agent wallet signers,
 - policy-gated execution,
 - multi-agent isolation and orchestration,
-- real on-chain interaction paths on devnet (Raydium/Orca attempts with safe SPL-token fallback).
+- real on-chain interaction paths on devnet (Orca Whirlpool swaps with safe SPL-token fallback).
 
 > **Design principle:** AI engines produce intents only. They never receive private keys.
 
@@ -134,7 +134,7 @@ export LLM_API_KEY="your_key"
   - funder-to-agent SOL distribution.
 - `src/policy-guard.ts`
   - 8-step policy validation,
-  - execution routing (`raydium`, `orca`, `spl-token-swap`),
+  - execution routing (`orca`, `spl-token-swap`),
   - real signer-based transaction submission,
   - policy audit calls.
 - `src/agent-logic.ts` + `src/ai-engines/*`
@@ -164,7 +164,6 @@ export LLM_API_KEY="your_key"
 ### Protocol interaction on devnet
 
 Execution routing:
-- `raydium` → Raydium CPMM flow (with fallback on error),
 - `orca` → Orca Whirlpool flow (with fallback on error),
 - `spl-token-swap` → SPL token mint/mintTo/transfer flow.
 

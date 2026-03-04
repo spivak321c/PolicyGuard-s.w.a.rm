@@ -4,7 +4,7 @@ export class ScriptedDecisionEngine implements IAgentDecisionEngine {
   async buildIntent(input: {
     agentId: string;
     marketBias: "bullish" | "bearish" | "neutral";
-    protocolPreference: "raydium" | "orca" | "spl-token-swap";
+    protocolPreference: "orca" | "spl-token-swap";
   }): Promise<AgentIntent> {
     const baseAmount = input.marketBias === "bullish" ? 0.4 : input.marketBias === "bearish" ? 0.2 : 0.3;
 
@@ -29,7 +29,7 @@ export class OllamaStubDecisionEngine implements IAgentDecisionEngine {
   async buildIntent(input: {
     agentId: string;
     marketBias: "bullish" | "bearish" | "neutral";
-    protocolPreference: "raydium" | "orca" | "spl-token-swap";
+    protocolPreference: "orca" | "spl-token-swap";
   }): Promise<AgentIntent> {
     return {
       agentId: input.agentId,

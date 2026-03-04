@@ -5,7 +5,7 @@ export type IntentType = "swap" | "add-liquidity" | "remove-liquidity" | "transf
 export interface AgentIntent {
   agentId: string;
   type: IntentType;
-  protocol: "raydium" | "orca" | "spl-token-swap";
+  protocol: "orca" | "spl-token-swap";
   amountSol: number;
   inputMint?: string;
   outputMint?: string;
@@ -19,7 +19,7 @@ export interface PolicyConfig {
   maxSolPerTransaction: number;
   maxSolDaily: number;
   maxSlippageBps: number;
-  allowedProtocols: Array<"raydium" | "orca" | "spl-token-swap">;
+  allowedProtocols: Array<"orca" | "spl-token-swap">;
   allowedMints: string[];
   blockedAddresses: string[];
   cooldownSeconds: number;
@@ -79,6 +79,6 @@ export interface IAgentDecisionEngine {
   buildIntent(input: {
     agentId: string;
     marketBias: "bullish" | "bearish" | "neutral";
-    protocolPreference: "raydium" | "orca" | "spl-token-swap";
+    protocolPreference: "orca" | "spl-token-swap";
   }): Promise<AgentIntent>;
 }

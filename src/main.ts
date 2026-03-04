@@ -246,7 +246,7 @@ async function attackTest(args: string[]): Promise<void> {
   const malicious = {
     agentId: "attacker-1",
     type: "swap" as const,
-    protocol: "raydium" as const,
+    protocol: "orca" as const,
     amountSol: 10,
     inputMint: "So11111111111111111111111111111111111111112",
     outputMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",

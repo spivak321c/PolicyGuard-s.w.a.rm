@@ -70,7 +70,7 @@ console.log("  (Fund with: solana airdrop 2 <pubkey> --url devnet)");
 
 const scripted = new ScriptedDecisionEngine();
 const sampleIntent = await scripted.buildIntent({
-  agentId: "demo", marketBias: "bullish", protocolPreference: "raydium"
+  agentId: "demo", marketBias: "bullish", protocolPreference: "orca"
 });
 console.log("\n  Sample intent (scripted):");
 console.log("   protocol   :", sampleIntent.protocol);
@@ -88,7 +88,7 @@ if (process.env.GROQ_API_KEY) {
 
   hr();
   console.log(`  2. Groq Engine (${model})`);
-  const intent = await engine.buildIntent({ agentId: "groq-demo", marketBias: "neutral", protocolPreference: "raydium" });
+  const intent = await engine.buildIntent({ agentId: "groq-demo", marketBias: "neutral", protocolPreference: "orca" });
   console.log("  LLM-generated intent:");
   console.log("   protocol   :", intent.protocol);
   console.log("   amountSol  :", intent.amountSol);
@@ -112,7 +112,7 @@ if (process.env.LLM_ENDPOINT && process.env.LLM_MODEL) {
   console.log(`  3. Generic LLM Engine (${model})`);
   console.log("  Endpoint:", process.env.LLM_ENDPOINT);
 
-  const intent = await engine.buildIntent({ agentId: "generic-demo", marketBias: "bearish", protocolPreference: "raydium" });
+  const intent = await engine.buildIntent({ agentId: "generic-demo", marketBias: "bearish", protocolPreference: "orca" });
   console.log("  LLM-generated intent:");
   console.log("   protocol   :", intent.protocol);
   console.log("   amountSol  :", intent.amountSol);
@@ -140,7 +140,7 @@ const [atkAgent] = atkSwarm.agents;
 if (atkAgent) {
   try {
     await atkAgent.processIntent({
-      agentId: "attacker", type: "swap", protocol: "raydium",
+      agentId: "attacker", type: "swap", protocol: "orca",
       amountSol: 10, slippageBps: 80, rationale: "hack",
       inputMint: "So11111111111111111111111111111111111111112",
       outputMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
