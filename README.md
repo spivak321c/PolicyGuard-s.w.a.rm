@@ -32,8 +32,10 @@ If `funder.json` does not exist, the command creates it and prints the funder ad
 ### 3) Fund the funder wallet on devnet
 
 ```bash
-solana airdrop 5 <FUNDER_PUBLIC_KEY> --url devnet
+solana airdrop 5 <FUNDER_PUBLIC_KEY> --url devnet 
 ```
+
+*Note: If `solana airdrop` fails due to rate limits, you can manually fund the address at [faucet.solana.com](https://faucet.solana.com).*
 
 ### 4) Run a swarm
 
@@ -50,6 +52,9 @@ bun run src/main.ts run-swarm --agents=2 --engine=generic --funder=funder.json
 bun run src/main.ts run-swarm --agents=2 --agents-file=agents.json --engine=coordinator --coordinator=groq:planner,openai:reviewer --funder=funder.json
 # Enable companion inter-agent SPL transfer after successful swaps
 bun run src/main.ts run-swarm --agents=2 --engine=scripted --with-peer-transfer=true --funder=funder.json
+
+# Enable verbose technical logs for debugging
+SWARM_TECHNICAL_LOGS=1 bun run src/main.ts run-swarm --agents=2 --engine=scripted --funder=funder.json
 ```
 
 ### 5) Run attack simulation
@@ -103,8 +108,32 @@ bun run build
 | `LLM_API_KEY` | Optional for `generic` | API key |
 | `POLICY_VAULT_ONCHAIN` | Optional | `true` to attempt on-chain memo logging |
 | `POLICY_LEDGER_SQLITE_PATH` | Optional | Override durable SQLite policy ledger path |
+| `SWARM_TECHNICAL_LOGS` | Optional | `1` to enable verbose technical logging |
 
-Examples:
+### 2) Using a .env file
+
+This project supports loading environment variables from a `.env` file in the root directory.
+
+Example `.env`:
+```bash
+# Core logic
+AGENT_ENGINE=groq
+GROQ_API_KEY=gsk_...
+
+# Optional: Generic OpenAI-compatible engine
+# AGENT_ENGINE=generic
+# LLM_ENDPOINT=https://api.openai.com/v1/chat/completions
+# LLM_MODEL=gpt-4o
+# LLM_API_KEY=sk-...
+
+# Logging
+SWARM_TECHNICAL_LOGS=1
+
+# Custom RPC
+# SOLANA_RPC_URL=https://api.devnet.solana.com
+```
+
+### 3) Command line examples
 
 ```bash
 # Scripted
