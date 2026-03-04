@@ -5,7 +5,7 @@ vi.mock("bun:sqlite", () => {
     private readonly ledger = new Map<string, { date: string; spent_sol: number; last_intent_ts: number; checksum: string }>();
     private readonly intents = new Map<string, { agent_id: string; created_at_ts: number; status: string; signature?: string; reason?: string }>();
 
-    exec(): void {}
+    exec(): void { }
 
     query(sql: string) {
       const normalized = sql.toLowerCase();
@@ -52,11 +52,11 @@ vi.mock("bun:sqlite", () => {
       return { get: () => null, run: () => ({ changes: 0 }) };
     }
 
-    close(): void {}
+    close(): void { }
   }
 
   return { Database: MockDatabase };
-}, { virtual: true });
+});
 import { Keypair } from "@solana/web3.js";
 import { PolicyGuard } from "../src/policy-guard";
 import { getDefaultPolicyConfig } from "../src/policy-config";
